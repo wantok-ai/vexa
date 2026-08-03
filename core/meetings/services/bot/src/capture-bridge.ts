@@ -36,13 +36,15 @@ import {
   type BrowserContext,
 } from '@vexa/remote-browser';
 import { getJoinBrowserArgs } from '@vexa/join';
+import { stageCaptureBrowserArgs } from './stage.js';
+import { cameraBrowserArgs, installCameraScene } from './camera-scene.js';
 import type { RecordingMasterFormat } from '@vexa/recording';
 import { isMixedLanePlatform, type Invocation } from './config.js';
 import type { BotPipeline } from './pipeline.js';
 import type { BotRecordingSink } from './recording.js';
 import type { TelemetrySink } from './ports.js';
 import type { RemoteAudioActivityTap } from './aloneness.js';
-import { createTtsPlayback } from './tts-playback.js';
+import { createTtsPlayback, type TtsPlayback } from './tts-playback.js';
 
 /** Float32 PCM → base64 of its little-endian bytes — the EXACT codec wire payload, so a stored
  *  captured-signal.v1 frame round-trips through @vexa/capture-codec (encode→decode→same PCM). */
@@ -164,8 +166,17 @@ export async function launchBrowser(inv: Invocation): Promise<BrowserSession> {
   // getAuthenticatedBrowserArgs() is the minimal clean set remote-browser uses for signed-in
   // joins; getJoinBrowserArgs() adds the fake-device / autoplay flags the join lane needs. The
   // join args win on conflict (later wins in Chromium arg parsing).
-  const args = [...getAuthenticatedBrowserArgs(), ...getJoinBrowserArgs()];
+  const args = [...getAuthenticatedBrowserArgs(), ...getJoinBrowserArgs()]
+    .filter((arg) => !arg.startsWith('--use-file-for-fake-video-capture='));
+  args.push(...cameraBrowserArgs(), ...stageCaptureBrowserArgs());
   const { context, page } = await launchPersistentBrowser({ dataDir, args });
+
+  // Install Wantok's synthetic camera before Meet requests media. The scene is rendered in a
+  // canvas-backed MediaStream, so the bot has a useful animated camera without host devices,
+  // privileged containers, or a browser extension.
+  await installCameraScene(context, inv.platform).catch((error) => {
+    console.error(`[bot] camera-scene: install failed: ${String(error)}`);
+  });
 
   // Voice-agent gate the page reads to decide whether to keep the mic hot (production parity).
   await context.addInitScript(`window.__vexa_voice_agent_enabled = ${!!inv.voiceAgentEnabled};`);
@@ -522,8 +533,9 @@ export async function startRecording(page: Page, inv: Invocation, recording: Bot
  * Production (services/vexa-bot/core/src/index.ts:595, 1039–1059 + services/tts-playback.ts)
  * does this at the OS level, not via a page fake-mic: a PulseAudio chain `tts_sink → virtual_mic`
  * is what Chromium captures as its microphone. The bot (a) unmutes the meeting-UI mic button
- * (page.evaluate clicks the platform's mic control), (b) writes synthesized PCM to the tts_sink
- * device (paplay) which feeds virtual_mic, then (c) re-mutes after a short tail.
+ * (page.evaluate clicks the platform's mic control), then writes synthesized PCM to the tts_sink
+ * device which feeds virtual_mic. The meeting microphone stays open; the OS source is muted
+ * between responses so browser toggles cannot clip the first or final WebRTC packets.
  *
  * This bot package does not own the PulseAudio/TTS process plumbing (that is the container
  * entrypoint + a TTS service, outside the bot's import surface), so here we wire only the
@@ -535,48 +547,134 @@ export interface SpeakController {
   speak(text: string, voice?: string): Promise<void>;
   /** Stop any in-flight speech (barge-in). */
   stop(): Promise<void>;
+  /** Whether a response currently owns the public microphone. */
+  isSpeaking(): boolean;
 }
 
-export function createSpeakController(page: Page, inv: Invocation): SpeakController {
+export interface MicrophoneControlSnapshot {
+  ariaPressed?: string | null;
+  dataIsMuted?: string | null;
+  found: boolean;
+  label?: string | null;
+}
+
+export type MicrophoneState = 'off' | 'on' | 'unknown';
+
+/** Infer the state represented by a Meet microphone control without depending on
+ *  minified class names. The button label describes the action, not the current state. */
+export function microphoneStateFromControl(control: MicrophoneControlSnapshot): MicrophoneState {
+  if (!control.found) return 'unknown';
+  if (control.dataIsMuted === 'true') return 'off';
+  if (control.dataIsMuted === 'false') return 'on';
+
+  const label = (control.label ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  if (/\b(?:turn on|unmute) microphone|\b(?:activer|reactiver|ouvrir) le micro/.test(label)) {
+    return 'off';
+  }
+  if (/\b(?:turn off|mute) microphone|\b(?:desactiver|couper) le micro/.test(label)) {
+    return 'on';
+  }
+  return 'unknown';
+}
+
+interface SpeakControllerDependencies {
+  log?: (message: string) => void;
+  tts?: TtsPlayback;
+}
+
+export function createSpeakController(
+  page: Page,
+  inv: Invocation,
+  dependencies: SpeakControllerDependencies = {},
+): SpeakController {
   const enabled = !!inv.voiceAgentEnabled;
   const platform = inv.platform;
-  const tts = createTtsPlayback((m) => console.log(`[bot] ${m}`));   // OS-level TTS→tts_sink half
+  const log = dependencies.log ?? ((message: string) => console.log(`[bot] ${message}`));
+  const tts = dependencies.tts ?? createTtsPlayback(log);   // OS-level TTS→tts_sink half
+  let generation = 0;
+  let speaking = false;
 
-  // Toggle the meeting-UI mic button so the bot is audible only while speaking (production
-  // unmutes before speech + auto-mutes after — index.ts:1039–1059). The PulseAudio source
-  // (tts_sink → virtual_mic) is the actual audio path and is provided by the VM image.
-  const setMic = async (on: boolean): Promise<void> => {
+  // Keep the meeting-UI microphone open after the first response. The PulseAudio source
+  // (tts_sink → virtual_mic) is the actual audio gate and remains muted outside TTS playback.
+  const setMic = async (on: boolean): Promise<{ changed: boolean; state: MicrophoneState }> => {
     // Runs IN THE BROWSER; reach the DOM via globalThis (no DOM types in this Node-typed file).
-    await page.evaluate(({ on, platform }) => {
+    const control = await page.evaluate(({ platform }) => {
       const doc = (globalThis as any).document;
-      const click = (sel: string) => doc?.querySelector(sel)?.click();
-      if (platform === 'teams') click('#microphone-button');
-      else if (platform === 'zoom') click('.join-audio-container__btn');
-      else {
-        // Google Meet / Jitsi: the mic toggle is identified by its aria-label —
-        // "microphone" on Meet, "Toggle mute audio" on stock jitsi builds.
-        const btn = Array.from(doc?.querySelectorAll('[role="button"],button') ?? [])
-          .find((b: any) => /microphone|mute audio/i.test(b.getAttribute('aria-label') ?? '')) as any;
-        btn?.click();
+      const selector = platform === 'teams'
+        ? '#microphone-button'
+        : platform === 'zoom'
+          ? '.join-audio-container__btn'
+          : '[role="button"],button';
+      const candidates = Array.from(doc?.querySelectorAll(selector) ?? []) as any[];
+      const button = platform === 'google_meet' || platform === 'jitsi'
+        ? candidates.find((candidate) => /microphone|\bmicro\b|mute audio/i.test(candidate.getAttribute('aria-label') ?? ''))
+        : candidates[0];
+      for (const candidate of Array.from(doc?.querySelectorAll('[data-wantok-mic-control]') ?? []) as any[]) {
+        candidate.removeAttribute('data-wantok-mic-control');
       }
-      void on; // toggle is a click; on/off intent is logged by the caller
-    }, { on, platform }).catch(() => { /* L4: best-effort UI drive */ });
+      if (!button) return { found: false };
+      button.setAttribute('data-wantok-mic-control', 'true');
+      return {
+        ariaPressed: button.getAttribute('aria-pressed'),
+        dataIsMuted: button.getAttribute('data-is-muted'),
+        found: true,
+        label: button.getAttribute('aria-label'),
+      };
+    }, { platform }).catch(() => ({ found: false } as MicrophoneControlSnapshot));
+
+    const state = microphoneStateFromControl(control);
+    if (state === (on ? 'on' : 'off')) {
+      log(`[voice] microphone already ${state}`);
+      return { changed: false, state };
+    }
+
+    if (!control.found && platform === 'google_meet') {
+      await page.keyboard.press('Control+D');
+      log(`[voice] microphone ${on ? 'enabled' : 'disabled'} with Meet shortcut fallback`);
+      return { changed: true, state };
+    }
+    if (!control.found) {
+      log(`[voice] microphone control not found for ${platform}`);
+      return { changed: false, state };
+    }
+
+    await page.locator('[data-wantok-mic-control="true"]').first().click({ timeout: 3_000 });
+    log(`[voice] microphone ${on ? 'enabled' : 'disabled'} from state ${state}`);
+    return { changed: true, state };
   };
 
   return {
     async speak(text: string, voice?: string): Promise<void> {
       if (!enabled) { console.error('[bot] speak ignored: voiceAgentEnabled is false'); return; }
+      const turn = ++generation;
+      if (speaking) tts.stop();
+      speaking = true;
       console.log(`[bot] speak: "${text.slice(0, 60)}"`);
-      await setMic(true);                                     // (a) unmute the meeting-UI mic button
-      // (b) synthesize via the TTS service + stream PCM to tts_sink → virtual_mic (the bot's mic).
-      await tts.speak(text, voice).catch((e) => console.error(`[bot] speak: tts failed: ${String(e)}`));
-      await setMic(false);                                    // (c) re-mute after the tail
+      try {
+        await setMic(true);                                   // (a) unmute the meeting-UI mic button
+        if (generation !== turn) return;                      // interrupted while the UI was changing
+        // (b) synthesize via the TTS service + stream PCM to tts_sink → virtual_mic (the bot's mic).
+        await tts.speak(text, voice);
+      } catch (error) {
+        console.error(`[bot] speak: playback failed: ${String(error)}`);
+      } finally {
+        if (generation === turn) {
+          speaking = false;
+        }
+      }
     },
     async stop(): Promise<void> {
       if (!enabled) return;
+      generation++;
+      speaking = false;
       tts.stop();                                             // barge-in: kill playback + re-mute tts_sink
-      await setMic(false);
       console.log('[bot] speak_stop');
+    },
+    isSpeaking(): boolean {
+      return speaking;
     },
   };
 }

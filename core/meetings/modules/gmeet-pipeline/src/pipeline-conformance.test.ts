@@ -83,6 +83,23 @@ async function run() {
     segments.every((s) => s.language === "en"),
     JSON.stringify(segments.map((s) => [s.speaker, s.language])));
 
+  // A normal hesitation must not split one sentence into short orphan turns. Production showed
+  // a 1.5s delivery gap creating a new 0.3s turn whose words were then lost by STT.
+  const held: TranscriptSegment[] = [];
+  const heldPipe = createGmeetPipeline({
+    transcribe,
+    sink: { segment: (s) => held.push(s), draft: () => {}, finalize: () => {} },
+  });
+  heldPipe.feedAudio(0, "Alice", ONE_SEC, 0);
+  heldPipe.feedAudio(0, "Alice", ONE_SEC, 1500);
+  await heldPipe.flush();
+  await heldPipe.dispose();
+  check(
+    "a 1.5s in-sentence delivery gap stays in one speaker turn",
+    new Set(held.map((s) => s.speaker_key)).size === 1,
+    JSON.stringify(held.map((s) => s.speaker_key)),
+  );
+
   if (failed) { console.error(`\n❌ pipeline-conformance: ${failed} checks FAILED.`); process.exit(1); }
   console.log(`\n✅ pipeline-conformance: gmeet pipeline emits SEALED transcript.v1 offline — names carried, source/confidence correct, every segment schema-valid.`);
 }

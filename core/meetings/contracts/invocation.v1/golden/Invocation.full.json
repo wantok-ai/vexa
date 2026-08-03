@@ -10,6 +10,8 @@
   "meetingApiCallbackUrl": "http://meeting-api:8080/runtime/callback",
   "internalSecret": "INTERNAL_SECRET_PLACEHOLDER",
   "language": "en",
+  "allowedLanguages": ["en", "fr"],
+  "transcriptionContextTerms": ["Vexa", "Wantok", "Hayssam"],
   "transcribeEnabled": true,
   "transcriptionTier": "realtime",
   "transcriptionServiceUrl": "http://transcription:8083",

@@ -7,16 +7,18 @@ types; transports are adapters wired at the composition root.
 
 | File | Role |
 |---|---|
-| `index.ts` | **composition root** — validates config, launches the browser, wires the REAL adapters, runs the orchestrator, exits. Speak acts are tee'd to a voice handler (orchestrator core untouched). The container entrypoint (`main`). |
+| `index.ts` | **composition root** — validates config, launches the browser, wires the REAL adapters, runs the orchestrator, exits. Speak and camera acts are tee'd to their live handlers (orchestrator core untouched). The container entrypoint (`main`). |
 | `config.ts` | `invocation.v1` boot config — parse + ajv-validate `VEXA_BOT_CONFIG`, fail-fast (P14). Exports the typed `Invocation`. |
 | `ports.ts` | the port interfaces the core depends on: `JoinDriver · Pipeline · TranscriptSink · LifecycleSink · ActsSource · RecordingSink`. Pure (no transport types). |
 | `test-doubles.ts` | shared L2 port doubles (`noopAloneness`, `noopActs`, `noopPipeline`, …) — one export site for every orchestrator construction in tests. |
 | `orchestrator.ts` | the `lifecycle.v1` state machine (`createOrchestrator`) — joining → awaiting_admission → active → (completed \| failed). Depends only on ports. |
 | `contracts.ts` | TS mirrors of the published `lifecycle.v1 · acts.v1 · transcript.v1` schemas + the executable `canTransition` machine. |
 | `join-driver.ts` | **JoinDriver** — wraps `@vexa/join` `joinMeeting`/leave/removal (guest + authenticated); maps `JoinState`→`BotStatus`. |
-| `pipeline.ts` | **Pipeline** — `google_meet`→`@vexa/gmeet-pipeline` (per-channel, glow-named) · `zoom`/`teams`→`@vexa/mixed-pipeline`; STT via `@vexa/transcribe-whisper`; lane sink → bot `TranscriptSink.publish`. Exposes `feedAudio`. |
+| `pipeline.ts` | **Pipeline** — `google_meet`→`@vexa/gmeet-pipeline` (per-channel, glow-named) · `zoom`/`teams`→`@vexa/mixed-pipeline`; STT via `@vexa/transcribe-soniox` for WebSocket endpoints or `@vexa/transcribe-whisper` for the HTTP fallback; lane sink → bot `TranscriptSink.publish`. Exposes `feedAudio`. |
 | `recording.ts` | **RecordingSink** — `@vexa/recording` assembler (`buildRecordingMaster` on `is_final`/`close`) → upload (`RecordingService`). |
 | `capture-bridge.ts` | **L4-pending (O6)** — browser launch (+ S3 auth profile), page-side capture inject + PCM pump → `pipeline.feedAudio`, and the speak controller. Browser-resident; not unit-provable — validated on the VM. |
+| `barge-in.ts` | Conservative remote-speech detector that interrupts an active public response without reacting to isolated audio frames or Wantok's own virtual microphone. |
+| `camera-scene.ts` | Synthetic canvas camera installed before Meet requests media; renders the default animated signal and safe command-driven tasks, decisions, activity, toasts, and speaking/thinking states. |
 | `*.test.ts` | L1/L2/L3 — config (ajv goldens) · orchestrator (lifecycle.v1 sequence, fake ports) · lifecycle-http/transcript-redis/acts-redis (transports) · **pipeline (L3: capture→lane→stt→publish, overlap no cross-mislabel)** · **recording (L3: webm/wav/seq)**. |
 
 Tests run via `tsx` (no build step): `npx tsx src/<file>.test.ts`; all chained in `npm test`.

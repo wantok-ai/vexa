@@ -16,6 +16,7 @@ system meetings  # capture → transcribe → record; owns the raw transcript
   module record-chunker
   module recording
   module remote-browser
+  module soniox
   module teams-capture
   module whisper
   module zoom-capture
@@ -96,6 +97,7 @@ edges:
   bot -read-write-> userdata-blob  # restore session before launch (read) + write rotated session back on clean teardown (write)
   remote-browser -write-> userdata-blob  # provisioning login uploads the confirmed signed-in session
   gateway -read-> recording-blob
+  bot -call-> soniox-cloud  # bounded PCM stream -> external Soniox real-time STT when TRANSCRIPTION_SERVICE_URL uses ws/wss
   bot -call-> transcription  # audio -> first-party STT via TRANSCRIPTION_SERVICE_URL
   bot -read-> bot-commands  # SUBSCRIBE acts.v1 commands
   meeting-api -write-> bm-status  # PUBLISH status

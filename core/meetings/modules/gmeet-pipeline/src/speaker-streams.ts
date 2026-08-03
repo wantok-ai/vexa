@@ -639,9 +639,10 @@ export class SpeakerStreamManager {
     // it was never implemented. Skip the submission (never set inFlight): the buffer stays, so a
     // later louder window submits normally, and the idle path (trySubmit) still emits any earlier
     // lastTranscript and resets. The phrase-list filter remains the language-agnostic backstop.
-    if (rms(combined) < this.silenceRmsThreshold) {
+    const windowRms = rms(combined);
+    if (windowRms < this.silenceRmsThreshold) {
       log(`[SpeakerStreams] [SILENT-SKIP] "${buffer.speakerName}" ${(unconfirmed / this.sampleRate).toFixed(1)}s window ` +
-          `below RMS ${this.silenceRmsThreshold} — not submitting (no hallucination surface)`);
+          `at RMS ${windowRms.toFixed(6)} below ${this.silenceRmsThreshold} — not submitting (no hallucination surface)`);
       return;
     }
 

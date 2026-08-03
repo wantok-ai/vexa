@@ -21,6 +21,7 @@
  * Exit codes: 0 = signed in AND (when S3 is configured) uploaded; 1 = login not confirmed
  * (the userdata prefix is untouched) or the upload shipped nothing.
  */
+import { readFileSync } from 'fs';
 import { provisionLogin } from './login';
 import { BROWSER_DATA_DIR, syncBrowserDataToS3, type S3Config } from './session-store';
 import type { AuthPlatform } from './types';
@@ -41,8 +42,8 @@ async function main(): Promise<number> {
     userdataS3Path: process.env.BOT_USERDATA_S3_PATH || undefined,
     s3Endpoint: process.env.BOT_S3_ENDPOINT || undefined,
     s3Bucket: process.env.BOT_S3_BUCKET || undefined,
-    s3AccessKey: process.env.BOT_S3_ACCESS_KEY || undefined,
-    s3SecretKey: process.env.BOT_S3_SECRET_KEY || undefined,
+    s3AccessKey: readSecret('BOT_S3_ACCESS_KEY'),
+    s3SecretKey: readSecret('BOT_S3_SECRET_KEY'),
   };
   const s3Configured = !!(s3.userdataS3Path && s3.s3Endpoint && s3.s3Bucket);
 
@@ -72,6 +73,14 @@ async function main(): Promise<number> {
   console.log(`[provision-login] SUCCESS — ${uploaded} auth-essential items at ` +
     `s3://${s3.s3Bucket}/${s3.userdataS3Path}/browser-data; authenticated bots will restore this session.`);
   return 0;
+}
+
+function readSecret(name: 'BOT_S3_ACCESS_KEY' | 'BOT_S3_SECRET_KEY'): string | undefined {
+  const direct = process.env[name]?.trim();
+  if (direct) return direct;
+  const path = process.env[`${name}_FILE`]?.trim();
+  if (!path) return undefined;
+  return readFileSync(path, 'utf8').trim() || undefined;
 }
 
 main().then((code) => process.exit(code)).catch((e) => {

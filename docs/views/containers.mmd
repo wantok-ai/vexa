@@ -27,11 +27,13 @@ flowchart LR
     postgres["postgres"]
     minio["minio"]
   end
+  soniox_cloud["Soniox Cloud"]
   slim["slim"]
   extension["extension"]
   terminal["terminal"]
   dashboard["dashboard (deprecated)"]
   meeting_api -->|"write"| segments_table
+  bot -->|"WebSocket over TLS"| soniox_cloud
   bot -->|"HTTPS"| transcription
   meeting_api -->|"JDBC"| postgres
   meeting_api -->|"HTTPS"| minio

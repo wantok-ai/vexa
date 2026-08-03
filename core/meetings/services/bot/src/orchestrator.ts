@@ -315,15 +315,20 @@ export function createOrchestrator(inv: Invocation, deps: OrchestratorDeps) {
     unsubscribe();
     stopAloneness();
     stopRemoval();
-    await deps.pipeline.stop().catch(() => { /* best-effort */ });
-    deps.recording?.close(recordingKey);
+    // Leave while the meeting page is still fully alive. Browser-side capture teardown can
+    // invalidate the page that owns the platform controls; attempting the UI leave afterwards
+    // strands a ghost participant until the conferencing service detects the dead connection.
     // Bound the leave: a hung platform leave (e.g. a slow Zoom web-client teardown) must not stall
-    // the disposable worker past its SIGKILL grace — that would cut off the recording-master
-    // assembly + the `completed` callback flush. Best-effort, raced against an 8s cap.
+    // the disposable worker past its SIGKILL grace. Best-effort, raced against an 8s cap.
     await Promise.race([
       deps.join.leave(reason).catch(() => { /* best-effort */ }),
       new Promise<void>((resolve) => setTimeout(resolve, 8000)),
     ]);
+    // Flush capture/transcription/recording only after the visible participant has left. The
+    // recording sink's close fallback still finalizes the session if leaving navigated the page
+    // before the browser-side MediaRecorder could emit its final marker.
+    await deps.pipeline.stop().catch(() => { /* best-effort */ });
+    deps.recording?.close(recordingKey);
 
     console.error(`[bot] orchestrator: emitting completed (reason=${reason}, from=${cur})`);
     try {

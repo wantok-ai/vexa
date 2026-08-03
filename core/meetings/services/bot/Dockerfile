@@ -4,9 +4,10 @@
 #
 # Boots from VEXA_BOT_CONFIG (invocation.v1), joins a meeting via @vexa/join over
 # a @vexa/remote-browser page, captures → @vexa/{gmeet,mixed}-pipeline →
-# @vexa/transcribe-whisper, records via @vexa/recording, then dies.
+# @vexa/transcribe-soniox (or the explicit Whisper HTTP fallback), records via
+# @vexa/recording, then dies.
 #
-# Two stages, BOTH on `vexa/meet-join-env:dev` (the published Playwright +
+# Two stages, BOTH on the digest-pinned published `vexaai/meet-join-env` (Playwright +
 # humanized-X11 env, node 22 + corepack, chromium prebaked in /ms-playwright):
 #   • builder  — corepack pnpm, install the whole v0.12 workspace, build @vexa/bot
 #                and its workspace deps (pnpm --filter @vexa/bot... build).
@@ -25,7 +26,8 @@
 # ------------------------------------------------------------------------------
 # Stage 1: builder — install + build the workspace slice @vexa/bot depends on.
 # ------------------------------------------------------------------------------
-FROM vexa/meet-join-env:dev AS builder
+ARG MEET_JOIN_BASE_IMAGE=vexaai/meet-join-env:dev@sha256:3da33828a910895dd7ea6dbbf20a18a77c47010a746fdfb3bf1f503a19cf100b
+FROM ${MEET_JOIN_BASE_IMAGE} AS builder
 
 ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH \
@@ -33,8 +35,10 @@ ENV PNPM_HOME=/pnpm \
     # them during `pnpm install` (playwright/remote-browser have a postinstall).
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-    # onnxruntime-node (via @vexa/mixed-pipeline) — skip the optional CUDA fetch;
-    # the segmenter runs CPU and the smoke/gmeet path never loads it anyway.
+    # onnxruntime-node (via @vexa/mixed-pipeline) — skip the optional multi-GB
+    # CUDA provider download. The mixed-lane segmenter runs on CPU and Meet
+    # never loads it.
+    ONNXRUNTIME_NODE_INSTALL=skip \
     CI=1
 
 # pnpm pinned to the workspace's packageManager (pnpm@11.7.0) via corepack.
@@ -97,7 +101,7 @@ RUN cd /build && node core/meetings/services/bot/warm-hf-cache.mjs
 # Stage 2: runtime — the ephemeral worker. Same env base; add the bot's own audio
 # deps; carry the built workspace tree (incl. node_modules symlink farm) intact.
 # ------------------------------------------------------------------------------
-FROM vexa/meet-join-env:dev AS runtime
+FROM ${MEET_JOIN_BASE_IMAGE} AS runtime
 
 # The bot's OWN runtime deps NOT in the meet-join env: PulseAudio (the speak/TTS
 # + capture audio chain), fluxbox (a WM for the X11 session), and the aws CLI —

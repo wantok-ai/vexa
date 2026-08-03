@@ -23,7 +23,7 @@
  * lazy redis connect.
  */
 import { createClient } from 'redis';
-import { loadInvocation, InvocationError, speakerStreamConfigFromEnv, type Invocation } from './config.js';
+import { loadInvocation, InvocationError, meetingChannelId, speakerStreamConfigFromEnv, type Invocation } from './config.js';
 import type { Act, LifecycleEvent } from './contracts.js';
 import { createOrchestrator } from './orchestrator.js';
 import { createHttpLifecycleSink } from './adapters/lifecycle-http.js';
@@ -36,7 +36,10 @@ import { createCaptureSignalRecorder, wrapTranscribeWithTap, type CaptureSignalR
 import { createSttFaultReporter } from './stt-faults.js';
 import { launchBrowser, startCaptureBridge, startRecording, createSpeakController, type BrowserSession, type SpeakController } from './capture-bridge.js';
 import { createRemoteAudioActivityTap, createSilenceAlonenessSource, resolveAloneSilenceWindowMs } from './aloneness.js';
+import { createBargeInRemoteAudioTap } from './barge-in.js';
 import { installSignalHandlers } from './signals.js';
+import { createStageController, type StageController } from './stage.js';
+import { createCameraSceneController, type CameraSceneController } from './camera-scene.js';
 import type {
   JoinDriver,
   Pipeline,
@@ -68,13 +71,6 @@ function noBrowserJoinDriver(reason: string): JoinDriver {
  *  it satisfies the port so the orchestrator can teardown cleanly; it never captures. */
 function noBrowserPipeline(): Pipeline {
   return { async start() { /* */ }, async stop() { /* */ } };
-}
-
-/** The meeting id that keys the redis transcript/acts channels (0.11 control-plane convention:
- *  the numeric `meeting_id`). Falls back to the platform native id / connection id when the
- *  numeric id is absent (e.g. self-host paths), so the channels are always well-formed. */
-function meetingChannelId(inv: Invocation): string | number {
-  return inv.meeting_id ?? inv.nativeMeetingId ?? inv.connectionId ?? 'session';
 }
 
 /**
@@ -117,10 +113,22 @@ function teeActs(source: ActsSource, voice: (act: Act) => void | Promise<void>):
 
 /** The bot's voice-act handler: route acts.v1 speak / speak_stop to the SpeakController. The
  *  other voice acts (chat/screen/avatar) are out of this increment's scope. */
-function voiceHandler(speak: SpeakController): (act: Act) => Promise<void> {
+function liveActHandler(
+  speak: SpeakController,
+  stage: StageController,
+  camera: CameraSceneController,
+): (act: Act) => Promise<void> {
   return async (act) => {
-    if (act.action === 'speak') await speak.speak(act.text, act.voice);
+    if (act.action === 'speak') {
+      await camera.setMode('speaking', 'Je partage une réponse avec l’équipe.');
+      try { await speak.speak(act.text, act.voice); }
+      finally { await camera.setMode('listening', 'Je suis la conversation et je garde le fil.'); }
+    }
     else if (act.action === 'speak_stop') await speak.stop();
+    else if (act.action === 'screen_show' && act.imageUrl) await stage.show(act.imageUrl);
+    else if (act.action === 'screen_stop') await stage.stop();
+    else if (act.action === 'avatar_set') await camera.show(act.url);
+    else if (act.action === 'avatar_reset') await camera.reset();
   };
 }
 
@@ -202,6 +210,14 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
   const sttFaults = createSttFaultReporter();
   const speakerStreamConfig = speakerStreamConfigFromEnv(env);
   const remoteAudioActivity = createRemoteAudioActivityTap();
+  let speakController: SpeakController | null = null;
+  const participantAudio = createBargeInRemoteAudioTap(
+    remoteAudioActivity,
+    () => speakController,
+    {
+      onInterrupt: () => console.log('[bot] barge-in: participant speech interrupted the active response'),
+    },
+  );
   const aloneSilenceWindowMs = resolveAloneSilenceWindowMs(inv.automaticLeave?.everyoneLeftTimeout, env);
   const aloneness = createSilenceAlonenessSource({ activity: remoteAudioActivity, windowMs: aloneSilenceWindowMs });
   console.log(`[bot] aloneness: silence adapter enabled (window_ms=${aloneSilenceWindowMs})`);
@@ -224,6 +240,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     // the page.evaluate on the BLANK pre-navigation page (no VexaBrowserUtils, no audio), and the
     // subsequent goto to the meeting URL destroyed that context — so capture never attached. (L4.)
     const sess = session, bp = botPipeline, rec = recording;
+    const camera = createCameraSceneController(session.page, inv.platform);
     // In-meeting chat (jitsi lane) → a transcript.v1 `chat` segment: the sender is the
     // speaker, the wall clock is the timing (epoch seconds, like the audio lanes), and
     // `completed` is immediate — a chat line has no draft phase.
@@ -248,7 +265,14 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     // each failure surfaces LOUD via onFault (console with a full-fidelity serr(e)) instead of
     // throwing into the orchestrator's leave-on-fail backstop (which would hang the bot up).
     pipeline = createLivePipeline({
-      startCapture: () => startCaptureBridge(sess.page, inv, bp, signalRecorder?.sink, publishChat, remoteAudioActivity),   // on the live meeting page
+      startCapture: async () => {
+        // The camera scene is part of Wantok's participant presence. Enable it immediately after
+        // admission, before attaching the audio capture lane, while keeping failures non-fatal.
+        await camera.start().catch((error) => {
+          console.error(`[bot] camera-scene: start failed: ${String(error)}`);
+        });
+        return startCaptureBridge(sess.page, inv, bp, signalRecorder?.sink, publishChat, participantAudio);
+      },   // on the live meeting page
       startRecording: rec ? () => startRecording(sess.page, inv, rec) : undefined,          // MediaRecorder → recording.v1
       engine: bp,
       onFault: (stage, e) => {
@@ -257,7 +281,9 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     });
     // Voice: tee acts so `speak`/`speak_stop` reach the SpeakController (gated on voiceAgentEnabled).
     const speak = createSpeakController(session.page, inv);
-    acts = teeActs(liveActs, voiceHandler(speak));
+    speakController = speak;
+    const stage = createStageController(session.page, session.context, inv.platform);
+    acts = teeActs(liveActs, liveActHandler(speak, stage, camera));
   } catch (e) {
     console.error(`[bot] browser launch/capture wiring failed — falling back to clean terminal failed: ${String(e)}`);
     join = noBrowserJoinDriver(String(e));

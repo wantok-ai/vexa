@@ -11,6 +11,13 @@
 set -u
 
 export DISPLAY="${DISPLAY:-:99}"
+BOT_STORAGE_DIR="${BOT_STORAGE_DIR:-/app/storage}"
+
+# Join diagnostics write checkpoints before the meeting lifecycle starts. The
+# worker must own a private destination even when the runtime has no persistent
+# storage mount.
+mkdir -p "${BOT_STORAGE_DIR}/screenshots"
+chmod 0700 "${BOT_STORAGE_DIR}" "${BOT_STORAGE_DIR}/screenshots"
 
 echo "[entrypoint] Starting Xvfb on ${DISPLAY}..."
 Xvfb "${DISPLAY}" -screen 0 1920x1080x24 >/tmp/xvfb.log 2>&1 &
@@ -22,6 +29,16 @@ done
 
 echo "[entrypoint] Starting fluxbox..."
 fluxbox >/tmp/fluxbox.log 2>&1 &
+
+if [ "${ENABLE_NOVNC:-false}" = "true" ]; then
+  echo "[entrypoint] Starting operator-only noVNC view..."
+  x11vnc -display "${DISPLAY}" -forever -nopw -shared -rfbport 5900 >/tmp/x11vnc.log 2>&1 &
+  if [ -d /usr/share/novnc ]; then
+    websockify --web /usr/share/novnc 6080 localhost:5900 >/tmp/websockify.log 2>&1 &
+  else
+    websockify 6080 localhost:5900 >/tmp/websockify.log 2>&1 &
+  fi
+fi
 
 echo "[entrypoint] Starting PulseAudio (no idle exit)..."
 pulseaudio --start --exit-idle-time=-1 --log-target=syslog 2>/dev/null || true

@@ -95,6 +95,8 @@ export interface SonioxTranscriptionClientConfig {
   contextTerms?: string[];
   /** Opaque Wantok session identifier exposed in Soniox usage logs. */
   clientReferenceId?: string;
+  /** Drop one- or two-word results below this mean token confidence. Default: 0.55. */
+  minimumShortUtteranceConfidence?: number;
   /** Maximum WebSocket session duration. Default: 30000 ms. */
   timeoutMs?: number;
   /** Transient retry count after the first attempt. Default: 2. */
@@ -171,13 +173,35 @@ function normalizedLanguage(tokens: SonioxToken[], configured?: string): string 
   return selected;
 }
 
-function normalizedResult(tokens: SonioxToken[], duration: number, configuredLanguage?: string): TranscriptionResult {
+function normalizedResult(
+  tokens: SonioxToken[],
+  duration: number,
+  configuredLanguage?: string,
+  minimumShortUtteranceConfidence = 0.55,
+): TranscriptionResult {
   // Soniox control tokens are protocol events, never transcript text. `<end>` marks a semantic
   // utterance endpoint and `<fin>` marks stream finalization.
   const controlTokens = new Set(['<end>', '<fin>']);
   const visible = tokens.filter((token) => token.text && !controlTokens.has(token.text.trim().toLowerCase()));
   const text = visible.map((token) => token.text).join('').trim();
   if (!visible.length || !text) {
+    return { text: '', language: normalizedLanguage(visible, configuredLanguage), duration, segments: [] };
+  }
+  const lexicalTokens = visible.filter((token) => /[\p{L}\p{N}]/u.test(token.text ?? ''));
+  const confidenceWeights = lexicalTokens.flatMap((token) => {
+    if (!Number.isFinite(token.confidence)) return [];
+    const weight = Math.max(1, (token.text ?? '').replace(/[^\p{L}\p{N}]/gu, '').length);
+    return [{ confidence: token.confidence as number, weight }];
+  });
+  const wordCount = text.split(/\s+/u).filter(Boolean).length;
+  const confidenceWeight = confidenceWeights.reduce((sum, item) => sum + item.weight, 0);
+  const meanConfidence = confidenceWeight > 0
+    ? confidenceWeights.reduce((sum, item) => sum + item.confidence * item.weight, 0) / confidenceWeight
+    : undefined;
+  // Soniox exposes token confidence specifically for uncertainty handling. A very short result has
+  // too little linguistic context to self-correct, so an explicitly low-confidence result is safer
+  // to omit than to persist as a phantom acknowledgement. Missing confidence never causes a drop.
+  if (wordCount <= 2 && meanConfidence !== undefined && meanConfidence < minimumShortUtteranceConfidence) {
     return { text: '', language: normalizedLanguage(visible, configuredLanguage), duration, segments: [] };
   }
   const start = Math.max(0, (visible[0].start_ms ?? 0) / 1000);
@@ -206,6 +230,7 @@ export class SonioxTranscriptionClient {
   private readonly contextGeneral: Array<{ key: string; value: string }>;
   private readonly contextTerms: string[];
   private readonly clientReferenceId: string;
+  private readonly minimumShortUtteranceConfidence: number;
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
   private readonly retryDelayMs: number;
@@ -221,6 +246,9 @@ export class SonioxTranscriptionClient {
     this.contextGeneral = normalizeGeneralContext(config.contextGeneral ?? []);
     this.contextTerms = normalizeContextTerms(config.contextTerms ?? []);
     this.clientReferenceId = config.clientReferenceId?.trim().slice(0, 256) ?? '';
+    this.minimumShortUtteranceConfidence = Number.isFinite(config.minimumShortUtteranceConfidence)
+      ? Math.max(0, Math.min(1, config.minimumShortUtteranceConfidence as number))
+      : 0.55;
     this.timeoutMs = config.timeoutMs ?? 30_000;
     this.maxRetries = config.maxRetries ?? 2;
     this.retryDelayMs = config.retryDelayMs ?? 250;
@@ -330,7 +358,12 @@ export class SonioxTranscriptionClient {
           nonFinalTokens = response.tokens.filter((token) => !token.is_final);
         }
         if (response.finished) {
-          finish(normalizedResult(finalTokens.concat(nonFinalTokens), duration, language));
+          finish(normalizedResult(
+            finalTokens.concat(nonFinalTokens),
+            duration,
+            language,
+            this.minimumShortUtteranceConfidence,
+          ));
         }
       });
 

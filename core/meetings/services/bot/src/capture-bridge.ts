@@ -534,8 +534,8 @@ export async function startRecording(page: Page, inv: Invocation, recording: Bot
  * does this at the OS level, not via a page fake-mic: a PulseAudio chain `tts_sink → virtual_mic`
  * is what Chromium captures as its microphone. The bot (a) unmutes the meeting-UI mic button
  * (page.evaluate clicks the platform's mic control), then writes synthesized PCM to the tts_sink
- * device which feeds virtual_mic. The meeting microphone stays open; the OS source is muted
- * between responses so browser toggles cannot clip the first or final WebRTC packets.
+ * device which feeds virtual_mic. The meeting microphone and silent OS source stay open between
+ * responses so browser toggles cannot clip the first or final WebRTC packets.
  *
  * This bot package does not own the PulseAudio/TTS process plumbing (that is the container
  * entrypoint + a TTS service, outside the bot's import surface), so here we wire only the
@@ -546,7 +546,7 @@ export interface SpeakController {
   /** Establish the meeting microphone over the silent virtual source before the first utterance. */
   prepare(): Promise<void>;
   /** Begin speaking `text` (TTS synthesized + injected via the VM's PulseAudio chain). */
-  speak(text: string, voice?: string): Promise<void>;
+  speak(text: string, voice?: string, onPlaybackStart?: () => void | Promise<void>): Promise<void>;
   /** Stop any in-flight speech (barge-in). */
   stop(): Promise<void>;
   /** Whether a response currently owns the public microphone. */
@@ -665,7 +665,7 @@ export function createSpeakController(
 
   return {
     prepare,
-    async speak(text: string, voice?: string): Promise<void> {
+    async speak(text: string, voice?: string, onPlaybackStart?: () => void | Promise<void>): Promise<void> {
       if (!enabled) { console.error('[bot] speak ignored: voiceAgentEnabled is false'); return; }
       const turn = ++generation;
       if (speaking) tts.stop();
@@ -675,7 +675,7 @@ export function createSpeakController(
         await prepare();                                      // (a) ensure the WebRTC sender is established
         if (generation !== turn) return;                      // interrupted while the UI was changing
         // (b) synthesize via the TTS service + stream PCM to tts_sink → virtual_mic (the bot's mic).
-        await tts.speak(text, voice);
+        await tts.speak(text, voice, onPlaybackStart);
       } catch (error) {
         console.error(`[bot] speak: playback failed: ${String(error)}`);
       } finally {

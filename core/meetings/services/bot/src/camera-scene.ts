@@ -270,6 +270,7 @@ const CAMERA_INIT_SCRIPT = String.raw`(() => {
     : null;
   const videoProfile = { width: 1280, height: 720, frameRate: 12, maxBitrate: 1800000 };
   const syntheticTracks = new WeakSet();
+  const syntheticAudioTracks = new WeakSet();
   const syntheticSenders = new Set();
   const senderTunePending = new WeakSet();
   const nativeTrackClone = globalThis.MediaStreamTrack && globalThis.MediaStreamTrack.prototype.clone;
@@ -307,6 +308,31 @@ const CAMERA_INIT_SCRIPT = String.raw`(() => {
     if (!track) return track;
     syntheticTracks.add(track);
     try { track.contentHint = 'text'; } catch {}
+    return track;
+  };
+
+  const audioConstraintsWithoutHumanProcessing = (audio) => {
+    if (!audio) return audio;
+    const requested = audio === true || typeof audio !== 'object' ? {} : audio;
+    return {
+      ...requested,
+      autoGainControl: false,
+      echoCancellation: false,
+      noiseSuppression: false,
+    };
+  };
+
+  const markSyntheticAudioTrack = (track) => {
+    if (!track) return track;
+    syntheticAudioTracks.add(track);
+    try { track.contentHint = 'speech'; } catch {}
+    try {
+      globalThis.logBot?.('audio-quality ' + JSON.stringify({
+        event: 'source_created',
+        constraints: track.getConstraints?.() || {},
+        settings: track.getSettings?.() || {},
+      }));
+    } catch {}
     return track;
   };
 
@@ -372,7 +398,9 @@ const CAMERA_INIT_SCRIPT = String.raw`(() => {
   if (nativeTrackClone) {
     globalThis.MediaStreamTrack.prototype.clone = function wantokCloneTrack() {
       const clone = nativeTrackClone.call(this);
-      return syntheticTracks.has(this) ? markSyntheticTrack(clone) : clone;
+      if (syntheticTracks.has(this)) return markSyntheticTrack(clone);
+      if (syntheticAudioTracks.has(this)) return markSyntheticAudioTrack(clone);
+      return clone;
     };
   }
   if (nativeTrackApplyConstraints) {
@@ -380,6 +408,9 @@ const CAMERA_INIT_SCRIPT = String.raw`(() => {
       if (syntheticTracks.has(this)) {
         logVideoQuality('constraints_ignored', { requested: constraints || {} });
         return Promise.resolve();
+      }
+      if (syntheticAudioTracks.has(this)) {
+        return nativeTrackApplyConstraints.call(this, audioConstraintsWithoutHumanProcessing(constraints || true));
       }
       return nativeTrackApplyConstraints.call(this, constraints);
     };
@@ -696,11 +727,17 @@ const CAMERA_INIT_SCRIPT = String.raw`(() => {
   };
 
   mediaDevices.getUserMedia = async function wantokGetUserMedia(constraints) {
-    if (!constraints || !constraints.video) return nativeGetUserMedia(constraints);
+    if (!constraints) return nativeGetUserMedia(constraints);
+    const audioConstraints = audioConstraintsWithoutHumanProcessing(constraints.audio);
+    if (!constraints.video) {
+      const audioOnlyStream = await nativeGetUserMedia({ ...constraints, audio: audioConstraints });
+      for (const track of audioOnlyStream.getAudioTracks()) markSyntheticAudioTrack(track);
+      return audioOnlyStream;
+    }
     const tracks = [];
     if (constraints.audio) {
-      const audioStream = await nativeGetUserMedia({ audio: constraints.audio, video: false });
-      tracks.push(...audioStream.getAudioTracks());
+      const audioStream = await nativeGetUserMedia({ audio: audioConstraints, video: false });
+      tracks.push(...audioStream.getAudioTracks().map(markSyntheticAudioTrack));
     }
     const videoTrack = markSyntheticTrack(createTrack().clone());
     tracks.push(videoTrack);

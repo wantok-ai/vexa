@@ -44,9 +44,10 @@ echo "[entrypoint] Starting PulseAudio (no idle exit)..."
 pulseaudio --start --exit-idle-time=-1 --log-target=syslog 2>/dev/null || true
 sleep 1
 # Voice/capture audio graph (best-effort; only the speak path strictly needs it).
-pactl load-module module-null-sink sink_name=tts_sink \
+pactl load-module module-null-sink sink_name=tts_sink rate=48000 channels=1 channel_map=mono \
   sink_properties=device.description="TTSAudioSink" 2>/dev/null || true
 pactl load-module module-remap-source master=tts_sink.monitor source_name=virtual_mic \
+  rate=48000 channels=1 master_channel_map=mono channel_map=mono \
   source_properties=device.description="VirtualMicrophone" 2>/dev/null || true
 pactl set-default-source virtual_mic 2>/dev/null || true
 pactl set-sink-mute tts_sink 0 2>/dev/null || true

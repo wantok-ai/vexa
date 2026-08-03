@@ -11,7 +11,7 @@ class FakeSocket extends EventEmitter {
   readonly sent: Array<string | Buffer> = [];
   closed = false;
   terminated = false;
-  response: 'success' | 'payment' | 'rate' | 'timeout' | 'network' = 'success';
+  response: 'success' | 'low_confidence_short' | 'payment' | 'rate' | 'timeout' | 'network' = 'success';
 
   send(data: string | Buffer): void {
     this.sent.push(data);
@@ -40,6 +40,14 @@ class FakeSocket extends EventEmitter {
         })), false);
         return;
       }
+      if (this.response === 'low_confidence_short') {
+        this.emit('message', Buffer.from(JSON.stringify({ tokens: [
+          { text: 'Fine', start_ms: 0, end_ms: 280, confidence: 0.18, is_final: true, language: 'en' },
+          { text: '.', start_ms: 280, end_ms: 300, confidence: 0.2, is_final: true, language: 'en' },
+       ] })), false);
+        this.emit('message', Buffer.from(JSON.stringify({ finished: true })), false);
+        return;
+      }
       this.emit('message', Buffer.from(JSON.stringify({ tokens: [
         { text: 'Hello', start_ms: 0, end_ms: 300, confidence: 0.98, is_final: true, language: 'en' },
         { text: ' wor', start_ms: 300, end_ms: 500, confidence: 0.91, is_final: false, language: 'en' },
@@ -57,6 +65,19 @@ class FakeSocket extends EventEmitter {
 }
 
 async function main(): Promise<void> {
+  {
+    const socket = new FakeSocket();
+    socket.response = 'low_confidence_short';
+    const client = new SonioxTranscriptionClient({
+      serviceUrl: 'wss://stt-rt.eu.soniox.com/transcribe-websocket', apiToken: 'test-key', maxRetries: 0,
+      socketFactory: () => socket as never,
+    });
+    const promise = client.transcribe(new Float32Array(4800).fill(0.01), 'en');
+    socket.emit('open');
+    const result = await promise;
+    check('low-confidence short Soniox artifacts are omitted', result.text === '' && result.segments.length === 0, JSON.stringify(result));
+  }
+
   {
     const socket = new FakeSocket();
     const client = new SonioxTranscriptionClient({

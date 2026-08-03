@@ -4,8 +4,8 @@
  * The browser half (unmute the meeting-UI mic) lives in capture-bridge.ts's SpeakController; this
  * is the audio half: synthesize `text` via the Vexa TTS service and play the returned audio through
  * the container's PulseAudio `tts_sink` (→ `virtual_mic`, which Chromium captures as its mic). The
- * `tts_sink → virtual_mic` graph is created by entrypoint.sh; here we only unmute it during
- * playback, decode it with FFmpeg into the PulseAudio sink, and re-mute after.
+ * `tts_sink → virtual_mic` graph is created by entrypoint.sh. Here FFmpeg only decodes/resamples;
+ * pacat paces the samples into PulseAudio and resolves after the server has drained the phrase.
  *
  * Ported from the production bot
  *   services/vexa-bot/core/src/services/tts-playback.ts (synthesizeViaTtsService + (un)mute).
@@ -22,17 +22,28 @@ import https from 'node:https';
 import http, { type ClientRequest } from 'node:http';
 import { PassThrough } from 'node:stream';
 
-export const playbackTailMs = 500;
+export const playbackTailMs = 250;
 
 export function ffmpegArgsForContentType(contentType: string | undefined): string[] {
   const args = ['-hide_banner', '-loglevel', 'error'];
   if (/audio\/(?:l16|pcm)|application\/octet-stream/i.test(contentType ?? '')) {
     args.push('-f', 's16le', '-ar', '24000', '-ac', '1');
   }
-  // PulseAudio accepts data faster than it plays it. Without real-time input pacing, FFmpeg can
-  // exit after buffering a whole phrase and the source is muted before WebRTC hears the tail.
-  args.push('-re', '-i', 'pipe:0', '-vn', '-ar', '24000', '-ac', '1', '-f', 'pulse', 'tts_sink');
+  // Decode and normalize only. pacat owns playback pacing and explicitly drains PulseAudio before
+  // exiting; FFmpeg's pulse muxer can report completion while the server still has queued samples.
+  args.push('-i', 'pipe:0', '-vn', '-ar', '48000', '-ac', '1', '-f', 's16le', 'pipe:1');
   return args;
+}
+
+export function pacatPlaybackArgs(): string[] {
+  return [
+    '--playback',
+    '--device=tts_sink',
+    '--format=s16le',
+    '--rate=48000',
+    '--channels=1',
+    '--latency-msec=20',
+  ];
 }
 
 function keepTtsAudioOpen(log: (m: string) => void): void {
@@ -48,14 +59,15 @@ export interface TtsPlayback {
   /** Synthesize `text` (voice optional) and play it into the meeting via tts_sink. Resolves when
    *  playback finishes. Best-effort: a synthesis/playback failure logs + resolves (never throws out
    *  — the voice handler must not break the orchestrator). */
-  speak(text: string, voice?: string): Promise<void>;
+  speak(text: string, voice?: string, onPlaybackStart?: () => void | Promise<void>): Promise<void>;
   /** Interrupt any in-flight playback (barge-in). */
   stop(): void;
 }
 
 /** Build a TtsPlayback that decodes the TTS response into the virtual microphone sink. */
 export function createTtsPlayback(log: (m: string) => void = () => { /* */ }): TtsPlayback {
-  let proc: ChildProcess | null = null;
+  let decoder: ChildProcess | null = null;
+  let player: ChildProcess | null = null;
   let request: ClientRequest | null = null;
   let generation = 0;
 
@@ -68,10 +80,11 @@ export function createTtsPlayback(log: (m: string) => void = () => { /* */ }): T
       try { request.destroy(); } catch { /* */ }
       request = null;
     }
-    if (proc) {
-      try { proc.stdin?.destroy(); proc.kill('SIGKILL'); } catch { /* */ }
-      proc = null;
+    for (const proc of [decoder, player]) {
+      try { proc?.stdin?.destroy(); proc?.kill('SIGKILL'); } catch { /* */ }
     }
+    decoder = null;
+    player = null;
   };
 
   const stop = (): void => {
@@ -79,7 +92,11 @@ export function createTtsPlayback(log: (m: string) => void = () => { /* */ }): T
     cancelActive();
   };
 
-  const speak = async (text: string, voice = 'auto'): Promise<void> => {
+  const speak = async (
+    text: string,
+    voice = 'auto',
+    onPlaybackStart?: () => void | Promise<void>,
+  ): Promise<void> => {
     const startedAt = Date.now();
     const base = process.env.TTS_SERVICE_URL?.trim();
     if (!base) { log('[tts] TTS_SERVICE_URL not set — speak is a no-op'); return; }
@@ -104,7 +121,8 @@ export function createTtsPlayback(log: (m: string) => void = () => { /* */ }): T
         settled = true;
         if (generation === turn) {
           request = null;
-          proc = null;
+          decoder = null;
+          player = null;
         }
         resolve();
       };
@@ -128,10 +146,14 @@ export function createTtsPlayback(log: (m: string) => void = () => { /* */ }): T
         const providerHeadersMs = Date.now() - startedAt;
         const serverTiming = res.headers['server-timing'];
         log(`[tts] latency provider_headers_ms=${providerHeadersMs}${serverTiming ? ` upstream=${serverTiming}` : ''}`);
-        const p = spawn('ffmpeg', ffmpegArgsForContentType(res.headers['content-type']), {
+        const decode = spawn('ffmpeg', ffmpegArgsForContentType(res.headers['content-type']), {
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        const playback = spawn('pacat', pacatPlaybackArgs(), {
           stdio: ['pipe', 'ignore', 'pipe'],
         });
-        proc = p;
+        decoder = decode;
+        player = playback;
         const meteredAudio = new PassThrough();
         let firstAudioByteAt: number | null = null;
         let audioBytes = 0;
@@ -142,7 +164,8 @@ export function createTtsPlayback(log: (m: string) => void = () => { /* */ }): T
           firstAudioByteAt = Date.now();
           log(`[tts] latency first_audio_byte_ms=${firstAudioByteAt - startedAt}`);
         });
-        p.stderr?.on('data', (d: Buffer) => log(`[tts] ffmpeg: ${d.toString().trim()}`));
+        decode.stderr?.on('data', (d: Buffer) => log(`[tts] ffmpeg: ${d.toString().trim()}`));
+        playback.stderr?.on('data', (d: Buffer) => log(`[tts] pacat: ${d.toString().trim()}`));
         let playbackEnded = false;
         const done = (withTail: boolean) => {
           if (playbackEnded) return;
@@ -160,9 +183,28 @@ export function createTtsPlayback(log: (m: string) => void = () => { /* */ }): T
             complete();
           }
         };
-        p.on('exit', (code) => done(code === 0));
-        p.on('error', (e) => { log(`[tts] ffmpeg error: ${String(e)}`); done(false); });
-        res.pipe(meteredAudio).pipe(p.stdin!);        // decode provider audio into the mic sink
+        playback.on('exit', (code) => done(code === 0));
+        playback.on('error', (e) => { log(`[tts] pacat error: ${String(e)}`); decode.kill('SIGKILL'); done(false); });
+        decode.on('error', (e) => { log(`[tts] ffmpeg error: ${String(e)}`); playback.kill('SIGKILL'); done(false); });
+        decode.on('exit', (code) => {
+          if (code !== 0 && generation === turn) {
+            log(`[tts] ffmpeg exited with code ${code}`);
+            playback.kill('SIGKILL');
+            done(false);
+          }
+        });
+        decode.stdout!.pipe(playback.stdin!);
+        void Promise.resolve(onPlaybackStart?.())
+          .catch((error) => log(`[tts] playback-start observer failed: ${String(error)}`))
+          .finally(() => {
+            if (generation !== turn) {
+              res.resume();
+              done(false);
+              return;
+            }
+            log(`[tts] playback started with drained PulseAudio output`);
+            res.pipe(meteredAudio).pipe(decode.stdin!);
+          });
       });
       request = req;
       req.on('error', (e) => {

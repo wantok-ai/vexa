@@ -56,7 +56,13 @@ check('prevents Meet from constraining the synthetic source to 360p', initScript
 check('keeps a full-resolution outbound encoding', initScript.includes('topEncoding.scaleResolutionDownBy = 1'));
 check('tunes Meet senders that receive the camera through replaceTrack', initScript.includes('wantokReplaceTrack'));
 check('reports the outbound WebRTC resolution', initScript.includes("logVideoQuality('outbound'"));
-check('intercepts video getUserMedia only', initScript.includes('if (!constraints || !constraints.video)'));
+check(
+  'disables human microphone processing for the synthetic TTS source',
+  initScript.includes('autoGainControl: false') &&
+    initScript.includes('echoCancellation: false') &&
+    initScript.includes('noiseSuppression: false'),
+);
+check('preserves disabled processing on cloned audio tracks', initScript.includes('markSyntheticAudioTrack(clone)'));
 check('renders blockers and open questions in the shared scene', initScript.includes('POINT DE BLOCAGE'));
 check('advertises a synthetic camera when Meet enumerates devices', initScript.includes('wantokEnumerateDevices'));
 check(

@@ -120,8 +120,14 @@ function liveActHandler(
 ): (act: Act) => Promise<void> {
   return async (act) => {
     if (act.action === 'speak') {
-      await camera.setMode('speaking', 'Je partage une réponse avec l’équipe.');
-      try { await speak.speak(act.text, act.voice); }
+      await camera.setMode('thinking', 'Je prépare ma réponse.');
+      try {
+        await speak.speak(
+          act.text,
+          act.voice,
+          () => camera.setMode('speaking', 'Je partage une réponse avec l’équipe.'),
+        );
+      }
       finally { await camera.setMode('listening', 'Je suis la conversation et je garde le fil.'); }
     }
     else if (act.action === 'speak_stop') await speak.stop();

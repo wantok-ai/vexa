@@ -44,7 +44,7 @@ import type { BotPipeline } from './pipeline.js';
 import type { BotRecordingSink } from './recording.js';
 import type { TelemetrySink } from './ports.js';
 import type { RemoteAudioActivityTap } from './aloneness.js';
-import { createTtsPlayback, type TtsPlayback } from './tts-playback.js';
+import { createTtsPlayback, type PcmPlaybackSink, type TtsPlayback } from './tts-playback.js';
 
 /** Float32 PCM → base64 of its little-endian bytes — the EXACT codec wire payload, so a stored
  *  captured-signal.v1 frame round-trips through @vexa/capture-codec (encode→decode→same PCM). */
@@ -587,6 +587,38 @@ interface SpeakControllerDependencies {
   tts?: TtsPlayback;
 }
 
+/** Direct Google Meet audio sink. PCM is scheduled on the synthetic WebAudio microphone track
+ *  installed at document start, bypassing PulseAudio and Chromium's human microphone processor. */
+export function createBrowserPcmPlaybackSink(page: Page): PcmPlaybackSink {
+  return {
+    async begin(): Promise<void> {
+      await page.evaluate(async () => {
+        const audio = (globalThis as any).__wantokAudio;
+        if (!audio?.begin) throw new Error('Wantok browser audio track is unavailable');
+        await audio.begin();
+      });
+    },
+    async write(pcm: Buffer): Promise<void> {
+      const encoded = pcm.toString('base64');
+      await page.evaluate(async (base64) => {
+        const audio = (globalThis as any).__wantokAudio;
+        if (!audio?.enqueuePcm) throw new Error('Wantok browser audio track is unavailable');
+        await audio.enqueuePcm(base64, 24_000);
+      }, encoded);
+    },
+    async drain(): Promise<void> {
+      await page.evaluate(async () => {
+        const audio = (globalThis as any).__wantokAudio;
+        if (!audio?.drain) throw new Error('Wantok browser audio track is unavailable');
+        await audio.drain();
+      });
+    },
+    stop(): void {
+      void page.evaluate(() => (globalThis as any).__wantokAudio?.stop?.()).catch(() => { /* page left */ });
+    },
+  };
+}
+
 export function createSpeakController(
   page: Page,
   inv: Invocation,
@@ -595,7 +627,10 @@ export function createSpeakController(
   const enabled = !!inv.voiceAgentEnabled;
   const platform = inv.platform;
   const log = dependencies.log ?? ((message: string) => console.log(`[bot] ${message}`));
-  const tts = dependencies.tts ?? createTtsPlayback(log);   // OS-level TTS→tts_sink half
+  const tts = dependencies.tts ?? createTtsPlayback(
+    log,
+    platform === 'google_meet' ? createBrowserPcmPlaybackSink(page) : undefined,
+  );
   let generation = 0;
   let speaking = false;
   let prepared = false;

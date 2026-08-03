@@ -281,6 +281,12 @@ const CAMERA_INIT_SCRIPT = String.raw`(() => {
   const nativeSenderReplaceTrack = globalThis.RTCRtpSender && globalThis.RTCRtpSender.prototype.replaceTrack;
   const nativeSenderSetParameters = globalThis.RTCRtpSender && globalThis.RTCRtpSender.prototype.setParameters;
   let baseTrack = null;
+  let baseAudioTrack = null;
+  let audioContext = null;
+  let audioDestination = null;
+  let audioNextStartTime = 0;
+  let audioGeneration = 0;
+  const activeAudioSources = new Set();
   let state = ${JSON.stringify(DEFAULT_SCENE)};
   let previousActivityAt = null;
   let activityStartedAt = 0;
@@ -334,6 +340,29 @@ const CAMERA_INIT_SCRIPT = String.raw`(() => {
       }));
     } catch {}
     return track;
+  };
+
+  const ensureAudioTrack = async () => {
+    if (baseAudioTrack && baseAudioTrack.readyState === 'live') return baseAudioTrack;
+    audioContext = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+    audioDestination = audioContext.createMediaStreamDestination();
+    const keepAlive = audioContext.createConstantSource();
+    const silentGain = audioContext.createGain();
+    silentGain.gain.value = 0;
+    keepAlive.connect(silentGain).connect(audioDestination);
+    keepAlive.start();
+    await audioContext.resume();
+    baseAudioTrack = markSyntheticAudioTrack(audioDestination.stream.getAudioTracks()[0]);
+    return baseAudioTrack;
+  };
+
+  const stopSyntheticAudio = () => {
+    audioGeneration += 1;
+    for (const source of activeAudioSources) {
+      try { source.stop(); } catch {}
+    }
+    activeAudioSources.clear();
+    audioNextStartTime = audioContext ? audioContext.currentTime : 0;
   };
 
   const applyVideoPolicy = (parameters) => {
@@ -728,16 +757,13 @@ const CAMERA_INIT_SCRIPT = String.raw`(() => {
 
   mediaDevices.getUserMedia = async function wantokGetUserMedia(constraints) {
     if (!constraints) return nativeGetUserMedia(constraints);
-    const audioConstraints = audioConstraintsWithoutHumanProcessing(constraints.audio);
+    if (!constraints.audio && !constraints.video) return nativeGetUserMedia(constraints);
     if (!constraints.video) {
-      const audioOnlyStream = await nativeGetUserMedia({ ...constraints, audio: audioConstraints });
-      for (const track of audioOnlyStream.getAudioTracks()) markSyntheticAudioTrack(track);
-      return audioOnlyStream;
+      return new MediaStream([markSyntheticAudioTrack((await ensureAudioTrack()).clone())]);
     }
     const tracks = [];
     if (constraints.audio) {
-      const audioStream = await nativeGetUserMedia({ audio: audioConstraints, video: false });
-      tracks.push(...audioStream.getAudioTracks().map(markSyntheticAudioTrack));
+      tracks.push(markSyntheticAudioTrack((await ensureAudioTrack()).clone()));
     }
     const videoTrack = markSyntheticTrack(createTrack().clone());
     tracks.push(videoTrack);
@@ -762,6 +788,54 @@ const CAMERA_INIT_SCRIPT = String.raw`(() => {
     setState(next) {
       if (!next || typeof next !== 'object') return;
       state = next;
+    },
+  };
+
+  globalThis.__wantokAudio = {
+    async begin() {
+      await ensureAudioTrack();
+      await audioContext.resume();
+      stopSyntheticAudio();
+      audioNextStartTime = audioContext.currentTime + 0.03;
+      return { currentTime: audioContext.currentTime, scheduledAt: audioNextStartTime };
+    },
+    async enqueuePcm(base64, sampleRate = 24000) {
+      const generation = audioGeneration;
+      await ensureAudioTrack();
+      await audioContext.resume();
+      const binary = atob(base64);
+      const frames = Math.floor(binary.length / 2);
+      if (!frames) return { queuedMs: 0 };
+      const buffer = audioContext.createBuffer(1, frames, sampleRate);
+      const channel = buffer.getChannelData(0);
+      for (let index = 0; index < frames; index += 1) {
+        const lo = binary.charCodeAt(index * 2);
+        const hi = binary.charCodeAt(index * 2 + 1);
+        const value = (hi << 8) | lo;
+        channel[index] = (value & 0x8000 ? value - 0x10000 : value) / 32768;
+      }
+      if (generation !== audioGeneration) return { queuedMs: 0 };
+      const source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audioDestination);
+      activeAudioSources.add(source);
+      source.onended = () => activeAudioSources.delete(source);
+      const startAt = Math.max(audioNextStartTime, audioContext.currentTime + 0.01);
+      source.start(startAt);
+      audioNextStartTime = startAt + buffer.duration;
+      return {
+        queuedMs: Math.max(0, Math.round((audioNextStartTime - audioContext.currentTime) * 1000)),
+        scheduledStartDelayMs: Math.max(0, Math.round((startAt - audioContext.currentTime) * 1000)),
+      };
+    },
+    async drain() {
+      const generation = audioGeneration;
+      const remainingMs = Math.max(0, Math.ceil((audioNextStartTime - audioContext.currentTime) * 1000));
+      if (remainingMs > 0) await new Promise((resolve) => setTimeout(resolve, remainingMs));
+      return { drained: generation === audioGeneration, remainingMs };
+    },
+    stop() {
+      stopSyntheticAudio();
     },
   };
 })();`;

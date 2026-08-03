@@ -2,10 +2,9 @@
  * TTS playback adapter (2b) — the OS-level half of the SPEAK path.  // L4 (O6/VM).
  *
  * The browser half (unmute the meeting-UI mic) lives in capture-bridge.ts's SpeakController; this
- * is the audio half: synthesize `text` via the Vexa TTS service and play the returned audio through
- * the container's PulseAudio `tts_sink` (→ `virtual_mic`, which Chromium captures as its mic). The
- * `tts_sink → virtual_mic` graph is created by entrypoint.sh. Here FFmpeg only decodes/resamples;
- * pacat paces the samples into PulseAudio and resolves after the server has drained the phrase.
+ * is the audio half: synthesize `text` via the Vexa TTS service and stream the returned PCM to the
+ * selected meeting sink. Google Meet uses a browser-clocked synthetic WebAudio track; other lanes
+ * retain the container's drained PulseAudio fallback.
  *
  * Ported from the production bot
  *   services/vexa-bot/core/src/services/tts-playback.ts (synthesizeViaTtsService + (un)mute).
@@ -46,6 +45,17 @@ export function pacatPlaybackArgs(): string[] {
   ];
 }
 
+export interface PcmPlaybackSink {
+  begin(): Promise<void>;
+  write(pcm: Buffer): Promise<void>;
+  drain(): Promise<void>;
+  stop(): void | Promise<void>;
+}
+
+function isRawPcm(contentType: string | undefined): boolean {
+  return /audio\/(?:l16|pcm)|application\/octet-stream/i.test(contentType ?? '');
+}
+
 function keepTtsAudioOpen(log: (m: string) => void): void {
   try {
     execSync('pactl set-sink-mute tts_sink 0', { stdio: 'pipe' });
@@ -56,7 +66,7 @@ function keepTtsAudioOpen(log: (m: string) => void): void {
 }
 
 export interface TtsPlayback {
-  /** Synthesize `text` (voice optional) and play it into the meeting via tts_sink. Resolves when
+  /** Synthesize `text` (voice optional) and play it into the selected meeting sink. Resolves when
    *  playback finishes. Best-effort: a synthesis/playback failure logs + resolves (never throws out
    *  — the voice handler must not break the orchestrator). */
   speak(text: string, voice?: string, onPlaybackStart?: () => void | Promise<void>): Promise<void>;
@@ -64,8 +74,12 @@ export interface TtsPlayback {
   stop(): void;
 }
 
-/** Build a TtsPlayback that decodes the TTS response into the virtual microphone sink. */
-export function createTtsPlayback(log: (m: string) => void = () => { /* */ }): TtsPlayback {
+/** Build a TtsPlayback. Google Meet injects raw PCM directly into its browser media track; other
+ *  platforms use the drained PulseAudio fallback. */
+export function createTtsPlayback(
+  log: (m: string) => void = () => { /* */ },
+  pcmSink?: PcmPlaybackSink,
+): TtsPlayback {
   let decoder: ChildProcess | null = null;
   let player: ChildProcess | null = null;
   let request: ClientRequest | null = null;
@@ -85,6 +99,7 @@ export function createTtsPlayback(log: (m: string) => void = () => { /* */ }): T
     }
     decoder = null;
     player = null;
+    void Promise.resolve(pcmSink?.stop()).catch(() => { /* best-effort interruption */ });
   };
 
   const stop = (): void => {
@@ -146,6 +161,43 @@ export function createTtsPlayback(log: (m: string) => void = () => { /* */ }): T
         const providerHeadersMs = Date.now() - startedAt;
         const serverTiming = res.headers['server-timing'];
         log(`[tts] latency provider_headers_ms=${providerHeadersMs}${serverTiming ? ` upstream=${serverTiming}` : ''}`);
+        if (pcmSink && isRawPcm(res.headers['content-type'])) {
+          void (async () => {
+            let firstAudioByteAt: number | null = null;
+            let audioBytes = 0;
+            let pending = Buffer.alloc(0);
+            const frameBytes = 24_000 * 2 * 40 / 1_000;
+            await pcmSink.begin();
+            for await (const value of res) {
+              if (generation !== turn) return;
+              const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+              if (!firstAudioByteAt) {
+                firstAudioByteAt = Date.now();
+                log(`[tts] latency first_audio_byte_ms=${firstAudioByteAt - startedAt}`);
+                await onPlaybackStart?.();
+                log('[tts] playback started on direct browser audio track');
+              }
+              audioBytes += chunk.byteLength;
+              pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
+              while (pending.length >= frameBytes) {
+                await pcmSink.write(pending.subarray(0, frameBytes));
+                pending = pending.subarray(frameBytes);
+              }
+            }
+            if (generation !== turn) return;
+            if (pending.length) await pcmSink.write(pending);
+            await pcmSink.drain();
+            if (firstAudioByteAt !== null) {
+              const audioDurationMs = Math.round(audioBytes / (24_000 * 2) * 1_000);
+              log(`[tts] latency playback_ms=${Date.now() - firstAudioByteAt} total_ms=${Date.now() - startedAt} audio_ms=${audioDurationMs} audio_bytes=${audioBytes} tail_ms=0 browser_track=true`);
+            }
+            finish();
+          })().catch((error) => {
+            if (generation === turn) log(`[tts] browser audio error: ${String(error)}`);
+            finish();
+          });
+          return;
+        }
         const decode = spawn('ffmpeg', ffmpegArgsForContentType(res.headers['content-type']), {
           stdio: ['pipe', 'pipe', 'pipe'],
         });

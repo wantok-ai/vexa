@@ -1,5 +1,6 @@
 import {
   createSpeakController,
+  createBrowserPcmPlaybackSink,
   microphoneStateFromControl,
   type MicrophoneControlSnapshot,
 } from './capture-bridge.js';
@@ -36,6 +37,30 @@ check('prefers the explicit muted attribute', microphoneStateFromControl({
   label: 'Turn off microphone',
 }) === 'off');
 check('fails closed on an absent control', microphoneStateFromControl({ found: false }) === 'unknown');
+
+const browserAudioEvents: string[] = [];
+(globalThis as any).__wantokAudio = {
+  begin: async () => { browserAudioEvents.push('begin'); },
+  enqueuePcm: async (base64: string, sampleRate: number) => {
+    browserAudioEvents.push(`write:${Buffer.from(base64, 'base64').byteLength}:${sampleRate}`);
+  },
+  drain: async () => { browserAudioEvents.push('drain'); },
+  stop: () => { browserAudioEvents.push('stop'); },
+};
+const browserSink = createBrowserPcmPlaybackSink({
+  evaluate: async (callback: (...args: any[]) => unknown, argument?: unknown) => callback(argument),
+} as never);
+await browserSink.begin();
+await browserSink.write(Buffer.from([1, 2, 3, 4]));
+await browserSink.drain();
+browserSink.stop();
+await new Promise<void>((resolve) => setTimeout(resolve, 0));
+check(
+  'direct Meet sink preserves PCM order and drains the browser track',
+  browserAudioEvents.join('|') === 'begin|write:4:24000|drain|stop',
+  JSON.stringify(browserAudioEvents),
+);
+delete (globalThis as any).__wantokAudio;
 
 const invocation: Invocation = {
   botName: 'Wantok',

@@ -19,7 +19,7 @@ types; transports are adapters wired at the composition root.
 | `capture-bridge.ts` | **L4-pending (O6)** — browser launch (+ S3 auth profile), page-side capture inject + PCM pump → `pipeline.feedAudio`, and the speak controller. The silent virtual microphone is opened immediately after admission so WebRTC is established before the first utterance. Human microphone processing is disabled for the synthetic source. Browser-resident; validated on the VM. |
 | `barge-in.ts` | Conservative remote-speech detector that interrupts an active public response without reacting to isolated audio frames or Wantok's own virtual microphone. |
 | `camera-scene.ts` | Synthetic canvas camera installed before Meet requests media; renders the default animated signal and safe command-driven tasks, decisions, activity, toasts, and speaking/thinking states. |
-| `tts-playback.ts` | Streams provider audio through FFmpeg into low-latency `pacat`; completion follows PulseAudio drain, and the speaking scene starts only when playback is armed. |
+| `tts-playback.ts` | Streams raw provider PCM directly to Meet's browser-clocked WebAudio microphone; other lanes fall back to drained low-latency `pacat`. The speaking scene starts only when playback is armed. |
 | `*.test.ts` | L1/L2/L3 — config (ajv goldens) · orchestrator (lifecycle.v1 sequence, fake ports) · lifecycle-http/transcript-redis/acts-redis (transports) · **pipeline (L3: capture→lane→stt→publish, overlap no cross-mislabel)** · **recording (L3: webm/wav/seq)**. |
 
 Tests run via `tsx` (no build step): `npx tsx src/<file>.test.ts`; all chained in `npm test`.

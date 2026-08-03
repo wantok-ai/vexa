@@ -63,6 +63,9 @@ check(
     initScript.includes('noiseSuppression: false'),
 );
 check('preserves disabled processing on cloned audio tracks', initScript.includes('markSyntheticAudioTrack(clone)'));
+check('creates a continuous WebAudio microphone track for Meet', initScript.includes('createMediaStreamDestination'));
+check('schedules PCM chunks against the browser audio clock', initScript.includes('enqueuePcm') && initScript.includes('audioNextStartTime'));
+check('drains scheduled browser audio before reporting completion', initScript.includes('async drain()'));
 check('renders blockers and open questions in the shared scene', initScript.includes('POINT DE BLOCAGE'));
 check('advertises a synthetic camera when Meet enumerates devices', initScript.includes('wantokEnumerateDevices'));
 check(

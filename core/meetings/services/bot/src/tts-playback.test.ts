@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { ffmpegArgsForContentType, playbackTailMs } from './tts-playback.js';
 
 let failed = 0;
@@ -18,6 +20,9 @@ check('compressed playback is paced in real time', mp3.indexOf('-re') < mp3.inde
 check('compressed audio is normalized to 24 kHz mono', mp3.includes('24000') && mp3.includes('1'), mp3.join(' '));
 check('compressed audio targets the PulseAudio sink', mp3.slice(-3).join(' ') === '-f pulse tts_sink', mp3.join(' '));
 check('keeps the meeting microphone open long enough to flush the final WebRTC packets', playbackTailMs >= 400);
+const source = readFileSync(new URL('./tts-playback.ts', import.meta.url), 'utf8');
+check('keeps the virtual microphone open between utterances', !source.includes('set-source-mute virtual_mic 1'));
+check('reports the provider audio duration for live truncation diagnostics', source.includes('audio_bytes='));
 
 if (failed) {
   console.error(`\n❌ TTS playback: ${failed} check(s) failed.`);

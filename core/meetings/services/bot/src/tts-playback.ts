@@ -35,13 +35,12 @@ export function ffmpegArgsForContentType(contentType: string | undefined): strin
   return args;
 }
 
-function setTtsMute(muted: boolean, log: (m: string) => void): void {
-  const v = muted ? '1' : '0';
+function keepTtsAudioOpen(log: (m: string) => void): void {
   try {
-    execSync(`pactl set-sink-mute tts_sink ${v}`, { stdio: 'pipe' });
-    execSync(`pactl set-source-mute virtual_mic ${v}`, { stdio: 'pipe' });
+    execSync('pactl set-sink-mute tts_sink 0', { stdio: 'pipe' });
+    execSync('pactl set-source-mute virtual_mic 0', { stdio: 'pipe' });
   } catch (err) {
-    log(`[tts] pactl ${muted ? 'mute' : 'unmute'} failed: ${(err as Error).message}`);
+    log(`[tts] pactl unmute failed: ${(err as Error).message}`);
   }
 }
 
@@ -50,7 +49,7 @@ export interface TtsPlayback {
    *  playback finishes. Best-effort: a synthesis/playback failure logs + resolves (never throws out
    *  — the voice handler must not break the orchestrator). */
   speak(text: string, voice?: string): Promise<void>;
-  /** Interrupt any in-flight playback (barge-in) + re-mute. */
+  /** Interrupt any in-flight playback (barge-in). */
   stop(): void;
 }
 
@@ -59,6 +58,10 @@ export function createTtsPlayback(log: (m: string) => void = () => { /* */ }): T
   let proc: ChildProcess | null = null;
   let request: ClientRequest | null = null;
   let generation = 0;
+
+  // The null-sink monitor produces digital silence while no TTS process is writing. Keeping the
+  // source open lets WebRTC establish the microphone before the first phrase and drain final audio.
+  keepTtsAudioOpen(log);
 
   const cancelActive = (): void => {
     if (request) {
@@ -69,7 +72,6 @@ export function createTtsPlayback(log: (m: string) => void = () => { /* */ }): T
       try { proc.stdin?.destroy(); proc.kill('SIGKILL'); } catch { /* */ }
       proc = null;
     }
-    setTtsMute(true, log);
   };
 
   const stop = (): void => {
@@ -103,7 +105,6 @@ export function createTtsPlayback(log: (m: string) => void = () => { /* */ }): T
         if (generation === turn) {
           request = null;
           proc = null;
-          setTtsMute(true, log);
         }
         resolve();
       };
@@ -133,9 +134,12 @@ export function createTtsPlayback(log: (m: string) => void = () => { /* */ }): T
         proc = p;
         const meteredAudio = new PassThrough();
         let firstAudioByteAt: number | null = null;
+        let audioBytes = 0;
+        meteredAudio.on('data', (chunk: Buffer) => {
+          audioBytes += chunk.byteLength;
+        });
         meteredAudio.once('data', () => {
           firstAudioByteAt = Date.now();
-          setTtsMute(false, log);                     // open the mic only when provider audio starts
           log(`[tts] latency first_audio_byte_ms=${firstAudioByteAt - startedAt}`);
         });
         p.stderr?.on('data', (d: Buffer) => log(`[tts] ffmpeg: ${d.toString().trim()}`));
@@ -145,7 +149,8 @@ export function createTtsPlayback(log: (m: string) => void = () => { /* */ }): T
           playbackEnded = true;
           const complete = () => {
             if (firstAudioByteAt !== null) {
-              log(`[tts] latency playback_ms=${Date.now() - firstAudioByteAt} total_ms=${Date.now() - startedAt} tail_ms=${withTail ? playbackTailMs : 0}`);
+              const audioDurationMs = Math.round(audioBytes / (24_000 * 2) * 1_000);
+              log(`[tts] latency playback_ms=${Date.now() - firstAudioByteAt} total_ms=${Date.now() - startedAt} audio_ms=${audioDurationMs} audio_bytes=${audioBytes} tail_ms=${withTail ? playbackTailMs : 0}`);
             }
             finish();
           };

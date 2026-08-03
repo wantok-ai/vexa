@@ -54,6 +54,7 @@ check('renders at Meet camera native 720p without resampling', initScript.includ
 check('prioritizes text resolution over motion', initScript.includes("contentHint = 'text'") && initScript.includes("degradationPreference = 'maintain-resolution'"));
 check('prevents Meet from constraining the synthetic source to 360p', initScript.includes('wantokApplyConstraints') && initScript.includes('constraints_ignored'));
 check('keeps a full-resolution outbound encoding', initScript.includes('topEncoding.scaleResolutionDownBy = 1'));
+check('tunes Meet senders that receive the camera through replaceTrack', initScript.includes('wantokReplaceTrack'));
 check('reports the outbound WebRTC resolution', initScript.includes("logVideoQuality('outbound'"));
 check('intercepts video getUserMedia only', initScript.includes('if (!constraints || !constraints.video)'));
 check('renders blockers and open questions in the shared scene', initScript.includes('POINT DE BLOCAGE'));

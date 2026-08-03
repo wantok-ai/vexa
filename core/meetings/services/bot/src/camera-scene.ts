@@ -277,6 +277,7 @@ const CAMERA_INIT_SCRIPT = String.raw`(() => {
   const nativeTrackGetCapabilities = globalThis.MediaStreamTrack && globalThis.MediaStreamTrack.prototype.getCapabilities;
   const nativeTrackGetConstraints = globalThis.MediaStreamTrack && globalThis.MediaStreamTrack.prototype.getConstraints;
   const nativeTrackGetSettings = globalThis.MediaStreamTrack && globalThis.MediaStreamTrack.prototype.getSettings;
+  const nativeSenderReplaceTrack = globalThis.RTCRtpSender && globalThis.RTCRtpSender.prototype.replaceTrack;
   const nativeSenderSetParameters = globalThis.RTCRtpSender && globalThis.RTCRtpSender.prototype.setParameters;
   let baseTrack = null;
   let state = ${JSON.stringify(DEFAULT_SCENE)};
@@ -426,6 +427,16 @@ const CAMERA_INIT_SCRIPT = String.raw`(() => {
         this,
         syntheticTracks.has(this.track) ? applyVideoPolicy(parameters) : parameters,
       );
+    };
+  }
+  if (nativeSenderReplaceTrack) {
+    globalThis.RTCRtpSender.prototype.replaceTrack = function wantokReplaceTrack(track) {
+      const replacement = nativeSenderReplaceTrack.call(this, track);
+      if (!syntheticTracks.has(track)) return replacement;
+      return replacement.then(() => {
+        syntheticSenders.add(this);
+        queueMicrotask(() => tuneSender(this));
+      });
     };
   }
   if (globalThis.RTCPeerConnection) {

@@ -69,9 +69,10 @@ const controller = createSpeakController(page as never, invocation, {
   log: (message) => events.push(`log:${message}`),
   tts,
 });
+await controller.prepare();
 await controller.speak('Bonjour équipe');
 check(
-  'opens Meet once and plays TTS without closing the meeting microphone',
+  'opens Meet before the first utterance and does not retoggle the microphone while speaking',
   events.filter((event) => event === 'click' || event.startsWith('tts:')).join('|') ===
     'click|tts:Bonjour équipe',
   JSON.stringify(events),

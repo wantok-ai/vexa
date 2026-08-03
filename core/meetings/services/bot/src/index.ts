@@ -264,8 +264,15 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     // page-side capture + recording attach + the engine start so pipeline.start() ALWAYS RESOLVES;
     // each failure surfaces LOUD via onFault (console with a full-fidelity serr(e)) instead of
     // throwing into the orchestrator's leave-on-fail backstop (which would hang the bot up).
+    // Prepare the silent virtual microphone as soon as admission completes. Starting TTS at the
+    // same instant as the first Meet unmute loses buffered audio while WebRTC creates its sender.
+    const speak = createSpeakController(session.page, inv);
+    speakController = speak;
     pipeline = createLivePipeline({
       startCapture: async () => {
+        await speak.prepare().catch((error) => {
+          console.error(`[bot] voice: microphone preparation failed: ${String(error)}`);
+        });
         // The camera scene is part of Wantok's participant presence. Enable it immediately after
         // admission, before attaching the audio capture lane, while keeping failures non-fatal.
         await camera.start().catch((error) => {
@@ -280,8 +287,6 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
       },
     });
     // Voice: tee acts so `speak`/`speak_stop` reach the SpeakController (gated on voiceAgentEnabled).
-    const speak = createSpeakController(session.page, inv);
-    speakController = speak;
     const stage = createStageController(session.page, session.context, inv.platform);
     acts = teeActs(liveActs, liveActHandler(speak, stage, camera));
   } catch (e) {

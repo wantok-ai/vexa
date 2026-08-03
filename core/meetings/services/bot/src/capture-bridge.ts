@@ -543,6 +543,8 @@ export async function startRecording(page: Page, inv: Invocation, recording: Bot
  * the OS-level audio injection the VM image provides. Speaking is gated on inv.voiceAgentEnabled.
  */
 export interface SpeakController {
+  /** Establish the meeting microphone over the silent virtual source before the first utterance. */
+  prepare(): Promise<void>;
   /** Begin speaking `text` (TTS synthesized + injected via the VM's PulseAudio chain). */
   speak(text: string, voice?: string): Promise<void>;
   /** Stop any in-flight speech (barge-in). */
@@ -596,9 +598,11 @@ export function createSpeakController(
   const tts = dependencies.tts ?? createTtsPlayback(log);   // OS-level TTS→tts_sink half
   let generation = 0;
   let speaking = false;
+  let prepared = false;
+  let preparation: Promise<void> | null = null;
 
-  // Keep the meeting-UI microphone open after the first response. The PulseAudio source
-  // (tts_sink → virtual_mic) is the actual audio gate and remains muted outside TTS playback.
+  // Keep the meeting-UI microphone open from admission onward. The silent PulseAudio source
+  // prevents echo while Chromium establishes its WebRTC sender before the first utterance.
   const setMic = async (on: boolean): Promise<{ changed: boolean; state: MicrophoneState }> => {
     // Runs IN THE BROWSER; reach the DOM via globalThis (no DOM types in this Node-typed file).
     const control = await page.evaluate(({ platform }) => {
@@ -646,7 +650,21 @@ export function createSpeakController(
     return { changed: true, state };
   };
 
+  const prepare = async (): Promise<void> => {
+    if (!enabled || prepared) return;
+    if (preparation) return preparation;
+    preparation = (async () => {
+      await setMic(true);
+      prepared = true;
+      log('[voice] microphone prepared before first speech');
+    })().finally(() => {
+      preparation = null;
+    });
+    return preparation;
+  };
+
   return {
+    prepare,
     async speak(text: string, voice?: string): Promise<void> {
       if (!enabled) { console.error('[bot] speak ignored: voiceAgentEnabled is false'); return; }
       const turn = ++generation;
@@ -654,7 +672,7 @@ export function createSpeakController(
       speaking = true;
       console.log(`[bot] speak: "${text.slice(0, 60)}"`);
       try {
-        await setMic(true);                                   // (a) unmute the meeting-UI mic button
+        await prepare();                                      // (a) ensure the WebRTC sender is established
         if (generation !== turn) return;                      // interrupted while the UI was changing
         // (b) synthesize via the TTS service + stream PCM to tts_sink → virtual_mic (the bot's mic).
         await tts.speak(text, voice);
@@ -670,7 +688,7 @@ export function createSpeakController(
       if (!enabled) return;
       generation++;
       speaking = false;
-      tts.stop();                                             // barge-in: kill playback + re-mute tts_sink
+      tts.stop();                                             // barge-in: kill the active synthesis/playback process
       console.log('[bot] speak_stop');
     },
     isSpeaking(): boolean {

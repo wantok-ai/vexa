@@ -169,7 +169,10 @@ export function createTtsPlayback(
             const frameBytes = 24_000 * 2 * 40 / 1_000;
             await pcmSink.begin();
             for await (const value of res) {
-              if (generation !== turn) return;
+              if (generation !== turn) {
+                finish();
+                return;
+              }
               const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
               if (!firstAudioByteAt) {
                 firstAudioByteAt = Date.now();
@@ -184,7 +187,10 @@ export function createTtsPlayback(
                 pending = pending.subarray(frameBytes);
               }
             }
-            if (generation !== turn) return;
+            if (generation !== turn) {
+              finish();
+              return;
+            }
             if (pending.length) await pcmSink.write(pending);
             await pcmSink.drain();
             if (firstAudioByteAt !== null) {

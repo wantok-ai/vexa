@@ -402,7 +402,7 @@ function sessionUpdate(config: RealtimeVoiceConfig): Record<string, unknown> {
           },
         },
         output: {
-          format: { type: 'audio/pcm' },
+          format: { type: 'audio/pcm', rate: REALTIME_RATE },
           voice: config.voice,
           speed: 1.08,
         },

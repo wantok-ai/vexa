@@ -79,6 +79,7 @@ check('session.update selects audio output and a latency-oriented VAD',
   update.session?.audio?.input?.turn_detection?.silence_duration_ms === 350,
   JSON.stringify(update));
 check('the no-op silence tool is available', update.session.tools[0].name === 'wait_for_user');
+check('Realtime output is 24 kHz', update.session.audio.output.format.rate === 24_000);
 
 socket.emit('message', Buffer.from(JSON.stringify({ type: 'session.updated' })));
 session.appendAudio(new Float32Array(640).fill(0.1), 'Alice');

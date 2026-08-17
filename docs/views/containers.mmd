@@ -28,12 +28,14 @@ flowchart LR
     minio["minio"]
   end
   soniox_cloud["Soniox Cloud"]
+  realtime_voice_provider["Realtime voice provider"]
   slim["slim"]
   extension["extension"]
   terminal["terminal"]
   dashboard["dashboard (deprecated)"]
   meeting_api -->|"write"| segments_table
   bot -->|"WebSocket over TLS"| soniox_cloud
+  bot -->|"WebSocket over TLS"| realtime_voice_provider
   bot -->|"HTTPS"| transcription
   meeting_api -->|"JDBC"| postgres
   meeting_api -->|"HTTPS"| minio

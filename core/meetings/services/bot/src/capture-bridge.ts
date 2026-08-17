@@ -277,6 +277,10 @@ export async function startCaptureBridge(
   onChat?: (sender: string, text: string) => void,
   /** Active-phase silence signal. It remains unavailable until page capture reports ready. */
   activity?: RemoteAudioActivityTap,
+  /** Optional low-latency voice lane. Mixed platforms already provide one combined stream;
+   *  Meet forwards only the glow-bound active speaker so separate participant tracks are never
+   *  serialized back-to-back into an artificially accelerated conversation. */
+  onRealtimeAudio?: (pcm: Float32Array, speakerName?: string) => void,
 ): Promise<() => Promise<void>> {
   const mixed = isMixedLanePlatform(inv.platform);
   const jitsi = inv.platform === 'jitsi';
@@ -299,7 +303,10 @@ export async function startCaptureBridge(
     const ts = tsMs ?? Date.now();
     observeRemoteAudio(pcm);
     tee(speakerIndex, pcm, ts);                                 // O-TEL-1: tap BEFORE the pipeline
-    if (mixed) pipeline.feedMixedAudio(pcm, ts);
+    if (mixed) {
+      onRealtimeAudio?.(pcm);
+      pipeline.feedMixedAudio(pcm, ts);
+    }
     else pipeline.feedAudio(speakerIndex, undefined, pcm, ts); // glow name is bound page-side in the v1 producer; channel index here
   };
   // gmeet: the v1 producer stamps the glow name page-side; this named variant carries it through.
@@ -308,6 +315,7 @@ export async function startCaptureBridge(
     const ts = tsMs ?? Date.now();
     observeRemoteAudio(pcm);
     tee(channel, pcm, ts, glowName);                            // O-TEL-1: tap BEFORE the pipeline
+    if (glowName) onRealtimeAudio?.(pcm, glowName);
     pipeline.feedAudio(channel, glowName, pcm, ts);
   };
   // mixed lane "who is lit" hint (Zoom/Teams active-speaker → the namer's time window).

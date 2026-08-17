@@ -34,12 +34,14 @@ import { createBotPipeline, createLivePipeline, createTranscribe, serr, type Bot
 import { createBotRecordingSink } from './recording.js';
 import { createCaptureSignalRecorder, wrapTranscribeWithTap, type CaptureSignalRecorder } from './telemetry.js';
 import { createSttFaultReporter } from './stt-faults.js';
-import { launchBrowser, startCaptureBridge, startRecording, createSpeakController, type BrowserSession, type SpeakController } from './capture-bridge.js';
+import { launchBrowser, startCaptureBridge, startRecording, createBrowserPcmPlaybackSink, createSpeakController, type BrowserSession, type SpeakController } from './capture-bridge.js';
 import { createRemoteAudioActivityTap, createSilenceAlonenessSource, resolveAloneSilenceWindowMs } from './aloneness.js';
 import { createBargeInRemoteAudioTap } from './barge-in.js';
 import { installSignalHandlers } from './signals.js';
 import { createStageController, type StageController } from './stage.js';
 import { createCameraSceneController, type CameraSceneController } from './camera-scene.js';
+import { createTtsPlayback } from './tts-playback.js';
+import { createRealtimeVoiceSession, realtimeVoiceConfigFromEnv, type RealtimeVoiceSession } from './realtime-voice.js';
 import type {
   JoinDriver,
   Pipeline,
@@ -117,9 +119,14 @@ function liveActHandler(
   speak: SpeakController,
   stage: StageController,
   camera: CameraSceneController,
+  realtime?: RealtimeVoiceSession | null,
 ): (act: Act) => Promise<void> {
   return async (act) => {
     if (act.action === 'speak') {
+      if (realtime?.answeredRecently()) {
+        console.log('[bot] realtime: suppressed delayed duplicate chained speech');
+        return;
+      }
       await camera.setMode('thinking', 'Je prépare ma réponse.');
       try {
         await speak.speak(
@@ -217,6 +224,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
   const speakerStreamConfig = speakerStreamConfigFromEnv(env);
   const remoteAudioActivity = createRemoteAudioActivityTap();
   let speakController: SpeakController | null = null;
+  let realtimeVoice: RealtimeVoiceSession | null = null;
   const participantAudio = createBargeInRemoteAudioTap(
     remoteAudioActivity,
     () => speakController,
@@ -272,8 +280,24 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     // throwing into the orchestrator's leave-on-fail backstop (which would hang the bot up).
     // Prepare the silent virtual microphone as soon as admission completes. Starting TTS at the
     // same instant as the first Meet unmute loses buffered audio while WebRTC creates its sender.
-    const speak = createSpeakController(session.page, inv);
+    const browserAudio = inv.platform === 'google_meet'
+      ? createBrowserPcmPlaybackSink(session.page)
+      : undefined;
+    const speak = createSpeakController(session.page, inv, {
+      tts: createTtsPlayback((message) => console.log(`[bot] ${message}`), browserAudio),
+    });
     speakController = speak;
+    realtimeVoice = browserAudio
+      ? createRealtimeVoiceSession(
+          realtimeVoiceConfigFromEnv(env, String(meetingId)),
+          browserAudio,
+          {
+            onListening: () => camera.setMode('listening', 'Je suis la conversation et je garde le fil.'),
+            onResponseStarted: () => camera.setMode('thinking', 'Je prépare une réponse en temps réel.'),
+            onTranscript: (text) => camera.setMode('speaking', text.slice(-220)),
+          },
+        )
+      : null;
     pipeline = createLivePipeline({
       startCapture: async () => {
         await speak.prepare().catch((error) => {
@@ -284,7 +308,18 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
         await camera.start().catch((error) => {
           console.error(`[bot] camera-scene: start failed: ${String(error)}`);
         });
-        return startCaptureBridge(sess.page, inv, bp, signalRecorder?.sink, publishChat, participantAudio);
+        await realtimeVoice?.start().catch((error) => {
+          console.error(`[bot] realtime: start failed, chained voice remains available: ${String(error)}`);
+        });
+        return startCaptureBridge(
+          sess.page,
+          inv,
+          bp,
+          signalRecorder?.sink,
+          publishChat,
+          participantAudio,
+          (pcm, speakerName) => realtimeVoice?.appendAudio(pcm, speakerName),
+        );
       },   // on the live meeting page
       startRecording: rec ? () => startRecording(sess.page, inv, rec) : undefined,          // MediaRecorder → recording.v1
       engine: bp,
@@ -294,7 +329,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     });
     // Voice: tee acts so `speak`/`speak_stop` reach the SpeakController (gated on voiceAgentEnabled).
     const stage = createStageController(session.page, session.context, inv.platform);
-    acts = teeActs(liveActs, liveActHandler(speak, stage, camera));
+    acts = teeActs(liveActs, liveActHandler(speak, stage, camera, realtimeVoice));
   } catch (e) {
     console.error(`[bot] browser launch/capture wiring failed — falling back to clean terminal failed: ${String(e)}`);
     join = noBrowserJoinDriver(String(e));
@@ -336,6 +371,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     // on a normal end; createLivePipeline.stop() is idempotent, and this also covers an early-exit
     // path that skipped the orchestrator's teardown. (#593)
     await pipeline.stop().catch(() => { /* best-effort */ });
+    await realtimeVoice?.stop().catch(() => { /* best-effort */ });
     await signalRecorder?.close().catch(() => { /* best-effort */ });
     if (session) await session.close().catch(() => { /* best-effort */ });
     // Quit the redis connections on teardown (best-effort — a quit failure must not change the

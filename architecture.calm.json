@@ -171,6 +171,18 @@
    ]
   },
   {
+   "unique-id": "realtime-voice-provider",
+   "node-type": "service",
+   "name": "Realtime voice provider",
+   "description": "External speech-to-speech provider reached through Cloudflare AI Gateway when configured, with a direct OpenAI server-to-server fallback. The ephemeral meeting bot streams active-speaker PCM and receives audio/transcript deltas; no provider credential is stored in the browser page.",
+   "interfaces": [
+    {
+     "unique-id": "realtime-voice-websocket",
+     "type": "websocket"
+    }
+   ]
+  },
+  {
    "unique-id": "transcription",
    "node-type": "service",
    "name": "transcription",
@@ -1681,6 +1693,42 @@
    "controls": {
     "data-egress": {
      "description": "External STT egress is explicit per deployment; use an EU Soniox project and EU endpoint when EU data residency is required",
+     "requirements": [
+      {
+       "requirement-url": "https://vexa.ai/calm/controls/no-egress.requirement.json",
+       "config": {
+        "dataClass": "audio",
+        "destination": "approved-external-provider",
+        "egressApproved": true
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "unique-id": "bot-realtime-voice",
+   "relationship-type": {
+    "connects": {
+     "source": {
+      "node": "bot"
+     },
+     "destination": {
+      "node": "realtime-voice-provider",
+      "interface": "realtime-voice-websocket"
+     }
+    }
+   },
+   "description": "active-speaker PCM -> persistent speech-to-speech session -> streamed PCM response and transcript deltas",
+   "protocol": "WebSocket over TLS",
+   "metadata": [
+    {
+     "access": "call"
+    }
+   ],
+   "controls": {
+    "data-egress": {
+     "description": "Realtime voice egress is opt-in, authenticated server-to-server, payload logging is disabled, and secrets remain in Docker secret-backed files",
      "requirements": [
       {
        "requirement-url": "https://vexa.ai/calm/controls/no-egress.requirement.json",

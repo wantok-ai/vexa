@@ -426,6 +426,21 @@ importers:
       '@vexa/capture-codec':
         specifier: workspace:*
         version: link:../../modules/capture-codec
+      '@vexa/gmeet-capture':
+        specifier: workspace:*
+        version: link:../../modules/gmeet-capture
+      '@vexa/jitsi-capture':
+        specifier: workspace:*
+        version: link:../../modules/jitsi-capture
+      '@vexa/mixed-capture-core':
+        specifier: workspace:*
+        version: link:../../modules/mixed-capture-core
+      '@vexa/teams-capture':
+        specifier: workspace:*
+        version: link:../../modules/teams-capture
+      '@vexa/zoom-capture':
+        specifier: workspace:*
+        version: link:../../modules/zoom-capture
       esbuild:
         specifier: ^0.25.0
         version: 0.25.12

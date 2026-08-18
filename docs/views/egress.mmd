@@ -20,5 +20,9 @@ flowchart LR
     minio["minio"]
     dashboard["dashboard (deprecated)"]
   end
+  soniox_cloud["Soniox Cloud"]
+  bot ==>|"audio -> approved-external-provider"| soniox_cloud
+  realtime_voice_provider["Realtime voice provider"]
+  bot ==>|"audio -> approved-external-provider"| realtime_voice_provider
   transcription["transcription"]
   bot ==>|"audio -> tenant-hosted"| transcription

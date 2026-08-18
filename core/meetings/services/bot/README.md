@@ -4,7 +4,8 @@
 
 The disposable meeting-joining browser bot (P7 worker). It boots from a single `invocation.v1`
 config in `VEXA_BOT_CONFIG`, joins a Google Meet / Zoom / Teams call over a humanized browser,
-captures audio, transcribes it (`@vexa/transcribe-whisper`), and publishes confirmed
+publishes a synthetic animated camera, captures audio, transcribes it (`@vexa/transcribe-soniox`,
+with the explicit Whisper HTTP fallback), and publishes confirmed
 `transcript.v1` segments + `lifecycle.v1` status — then dies. Node/TS because the join+capture
 domain lives in the browser/Playwright ecosystem; it's a modular monolith behind ports — the
 orchestrator core is offline-provable, while browser/redis/http are adapters wired only at the
@@ -14,13 +15,13 @@ composition root (`src/index.ts`).
 
 | Direction | Neighbour | Via | What crosses |
 |---|---|---|---|
-| consumes | scheduler / meeting-api (spawner) | `invocation.v1` in `VEXA_BOT_CONFIG` env | boot config: meeting URL, platform, ids, callback/upload URLs, secrets |
+| consumes | scheduler / meeting-api (spawner) | `invocation.v1` in `VEXA_BOT_CONFIG` or `VEXA_BOT_CONFIG_FILE` | boot config: meeting URL, platform, ids, callback/upload URLs, secrets |
 | spawns-over | `@vexa/join` + `@vexa/remote-browser` | in-process port (`JoinDriver`) | join/leave/removal over a humanized browser page |
 | publishes | collector [Py] | redis stream `transcription_segments` (XADD) | `transcript.v1` durable segment feed |
 | publishes | gateway → dashboard | redis pub/sub `tc:meeting:{id}:mutable` | live mutable `transcript.v1` segment |
 | produces | meeting-api | HTTP POST → `inv.meetingApiCallbackUrl` | `lifecycle.v1` status events (retry/backoff) |
 | produces | meeting-api | HTTP POST → `inv.recordingUploadUrl` | assembled recording master (multipart) |
-| consumes | gateway (commands) | redis pub/sub `bot_commands:meeting:{id}` | `acts.v1` commands (e.g. `speak` / `speak_stop`) |
+| consumes | gateway (commands) | redis pub/sub `bot_commands:meeting:{id}` | `acts.v1` commands (e.g. `speak`, `speak_stop`, safe camera scene updates) |
 
 ### Pre-join reachability gate (#530)
 
@@ -67,5 +68,7 @@ autonomous PASS/FAIL verdict (`make -C eval verify` for the offline oracle self-
 - ✅ delivered — `transcript.v1` egress (redis stream + mutable pub/sub)
 - ✅ delivered — `lifecycle.v1` HTTP callback (retry/backoff, never crashes the bot)
 - ✅ delivered — `acts.v1` ingress (redis subscriber; unknown acts dropped, never thrown)
+- ✅ delivered — crop-safe 1280×720 synthetic camera with a text-optimized WebRTC profile, outbound resolution telemetry, an animated default signal, and command-driven task/decision scenes
+- ✅ delivered — automatic barge-in: sustained remote speech cancels the active TTS request/playback and returns the public microphone to mute
 - ✅ delivered — recording assembler core (webm/wav/seq, L2/L3)
 - 🟡 partial — browser join + capture + recording-upload + speak (wired; L4-gated, proven on VM via `eval/`, not unit tests)

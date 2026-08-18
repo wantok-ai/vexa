@@ -54,9 +54,10 @@ export function isHallucination(text: string): boolean {
   if (stripped !== lower && db.has(stripped + '...')) return true;
   if (stripped !== lower && db.has(stripped + '.')) return true;
 
-  // Too short (single word < 10 chars)
+  // Short utterances are valid meeting speech ("Yes", "No", "Perfect", names, acronyms).
+  // Silence is already rejected by the RMS gate and known hallucinations by the phrase list;
+  // length alone is not evidence that speech is fabricated.
   const words = trimmed.split(/\s+/);
-  if (words.length <= 1 && trimmed.length < 10) return true;
 
   // Repetition loop: same 3-6 word phrase repeated 3+ times
   if (words.length >= 9) {

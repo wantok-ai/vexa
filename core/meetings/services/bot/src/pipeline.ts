@@ -5,9 +5,9 @@
  * The bot rewires NOTHING about transcription topology: the per-channel lane (turn gating,
  * LocalAgreement confirmation, glow→channel naming) lives in @vexa/gmeet-pipeline, the mixed
  * lane (pyannote cut + hints naming, no diarizer) in @vexa/mixed-pipeline, and the stt.v1
- * round-trip in @vexa/transcribe-whisper. This adapter only:
+ * round-trip in the injected Soniox or Whisper provider adapter. This adapter only:
  *   1. picks the lane on inv.platform (google_meet → gmeet/per-channel; zoom/teams/jitsi → mixed),
- *   2. injects the stt port (TranscriptionClient.transcribe) + a TranscriptSink, and
+ *   2. injects the configured STT port + a TranscriptSink, and
  *   3. RECONCILES the lane's TranscriptSink (segment/draft/finalize — owned by the lane's
  *      transcript.v1 contract) onto the bot's injected TranscriptSink.publish(segment) port.
  *
@@ -31,6 +31,7 @@ import {
   type HintKind,
 } from '@vexa/mixed-pipeline';
 import { TranscriptionClient, type TranscriptionResult } from '@vexa/transcribe-whisper';
+import { SonioxTranscriptionClient } from '@vexa/transcribe-soniox';
 import { isMixedLanePlatform, type Invocation, type Platform } from './config.js';
 import type { TranscriptSegment } from './contracts.js';
 import type { Pipeline, TranscriptSink } from './ports.js';
@@ -237,12 +238,53 @@ function createMixedBotPipeline(
   };
 }
 
-/** Build the real STT transcribe closure from invocation.v1 — language baked into the call so
+/** Build the real STT transcribe closure from invocation.v1 — ws/wss selects the Soniox
+ *  anti-corruption adapter; HTTP(S) preserves the self-hosted OpenAI-compatible fallback.
+ *  Language is baked into the call so
  *  the lane never knows about config. transcribeEnabled=false ⇒ a no-op transcribe (the engine
  *  still runs turn gating but emits empty text; recording-only meetings need no STT). */
 export function createTranscribe(inv: Invocation): Transcribe {
   if (inv.transcribeEnabled === false || !inv.transcriptionServiceUrl) {
     return async () => ({ text: '', language: inv.language ?? 'en', duration: 0, segments: [] });
+  }
+  if (/^wss?:\/\//i.test(inv.transcriptionServiceUrl)) {
+    const assistantName = inv.botName.split('·', 1)[0]?.trim() || 'Wantok';
+    const client = new SonioxTranscriptionClient({
+      serviceUrl: inv.transcriptionServiceUrl,
+      apiToken: inv.transcriptionServiceToken,
+      model: inv.transcriptionModel ?? undefined,
+      languageHints: inv.allowedLanguages,
+      // Soniox recommends strict restriction for one known language only. Multiple-language
+      // meetings keep the hints as a bias so natural code-switching remains recognizable.
+      languageHintsStrict: inv.allowedLanguages?.length === 1,
+      contextGeneral: [
+        { key: 'setting', value: 'Business team meeting with an AI meeting assistant' },
+        { key: 'assistant_name', value: assistantName },
+        ...(inv.allowedLanguages?.length
+          ? [
+              { key: 'expected_languages', value: inv.allowedLanguages.join(', ') },
+              { key: 'instructions', value: `Transcribe only in these expected languages: ${inv.allowedLanguages.join(', ')}` },
+            ]
+          : []),
+      ],
+      contextTerms: [
+        // Keep the assistant wake word and common integration names ahead of the optional
+        // organization glossary so they survive the provider context budget in every meeting.
+        assistantName,
+        'Wantok',
+        'Google Meet',
+        'Cloudflare',
+        'Soniox',
+        'Linear',
+        'ClickUp',
+        'Asana',
+        'Slack',
+        ...(inv.transcriptionContextTerms ?? []),
+      ],
+      clientReferenceId: inv.connectionId,
+    });
+    const language = inv.language ?? undefined;
+    return (pcm, prompt) => client.transcribe(pcm, language, prompt);
   }
   const client = new TranscriptionClient({
     serviceUrl: inv.transcriptionServiceUrl,

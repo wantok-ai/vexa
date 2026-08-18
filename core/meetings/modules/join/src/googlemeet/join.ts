@@ -170,16 +170,16 @@ async function firstVisibleSelector(
  * that saw the lobby are long gone by the time anyone reads it (#846 A4).
  */
 async function observedPageContext(page: Page): Promise<string> {
-  let url = "?";
-  try { url = page.url(); } catch { /* best-effort */ }
+  let origin = "?";
+  try { origin = new URL(page.url()).origin; } catch { /* best-effort */ }
   try {
     const ctx: any = await page.evaluate(() => ({
       lang: document.documentElement.getAttribute("lang") || "",
       nav: navigator.language || "",
     }));
-    return `url=${url} html.lang=${ctx.lang || "?"} navigator.language=${ctx.nav || "?"}`;
+    return `origin=${origin} html.lang=${ctx.lang || "?"} navigator.language=${ctx.nav || "?"}`;
   } catch {
-    return `url=${url} html.lang=? navigator.language=?`;
+    return `origin=${origin} html.lang=? navigator.language=?`;
   }
 }
 
@@ -187,7 +187,7 @@ async function observedPageContext(page: Page): Promise<string> {
  * Screenshot + compose the LOUD failure message for a total selector miss
  * (no-fallbacks.md — a missing control fails with a logged reason + screenshot,
  * never a silent skip). The message keeps its historical prefix verbatim (prod
- * monitoring greps it) and appends the observed locale/URL, plus the visible
+ * monitoring greps it) and appends the observed locale/origin, plus the visible
  * text-button labels when a structural scan ran — the one datum that turns the
  * next occurrence into a one-look diagnosis.
  */
@@ -212,7 +212,7 @@ export async function describeSelectorMiss(
  * Wait for the FIRST of an ordered selector list to become visible
  * (locale-agnostic selectors first, English text fallbacks last). Returns the
  * matched handle and the selector that won. On total failure: screenshot + LOUD
- * throw carrying the observed locale/URL.
+ * throw carrying the observed locale/origin.
  */
 export async function waitForAnySelector(
   page: Page,

@@ -145,7 +145,7 @@
    "unique-id": "bot",
    "node-type": "service",
    "name": "bot",
-   "description": "spawned-per-meeting worker: join -> capture -> STT -> transcript.v1",
+   "description": "spawned-per-meeting worker: join -> synthetic camera + capture -> STT -> transcript.v1; renders command-driven live meeting scenes",
    "metadata": [
     {
      "path": "core/meetings/services/bot"
@@ -155,6 +155,30 @@
     {
      "unique-id": "bot-commands-sub",
      "type": "consumer"
+    }
+   ]
+  },
+  {
+   "unique-id": "soniox-cloud",
+   "node-type": "service",
+   "name": "Soniox Cloud",
+   "description": "External real-time speech-to-text provider selected by a WebSocket TRANSCRIPTION_SERVICE_URL. The bot sends bounded PCM streams and receives token updates; speaker identity remains owned by the meeting capture lane.",
+   "interfaces": [
+    {
+     "unique-id": "soniox-stt-websocket",
+     "type": "websocket"
+    }
+   ]
+  },
+  {
+   "unique-id": "realtime-voice-provider",
+   "node-type": "service",
+   "name": "Realtime voice provider",
+   "description": "External speech-to-speech provider reached through Cloudflare AI Gateway when configured, with a direct OpenAI server-to-server fallback. The ephemeral meeting bot streams active-speaker PCM and receives audio/transcript deltas; no provider credential is stored in the browser page.",
+   "interfaces": [
+    {
+     "unique-id": "realtime-voice-websocket",
+     "type": "websocket"
     }
    ]
   },
@@ -348,6 +372,17 @@
    "metadata": [
     {
      "path": "core/meetings/modules/remote-browser"
+    }
+   ]
+  },
+  {
+   "unique-id": "soniox",
+   "node-type": "module",
+   "name": "soniox",
+   "description": "soniox — WebSocket STT anti-corruption module in meetings",
+   "metadata": [
+    {
+     "path": "core/meetings/modules/soniox"
     }
    ]
   },
@@ -1280,6 +1315,7 @@
       "record-chunker",
       "recording",
       "remote-browser",
+      "soniox",
       "teams-capture",
       "whisper",
       "zoom-capture",
@@ -1630,6 +1666,78 @@
      "nodes": [
       "bot",
       "agent-worker"
+     ]
+    }
+   }
+  },
+  {
+   "unique-id": "bot-soniox-stt",
+   "relationship-type": {
+    "connects": {
+     "source": {
+      "node": "bot"
+     },
+     "destination": {
+      "node": "soniox-cloud",
+      "interface": "soniox-stt-websocket"
+     }
+    }
+   },
+   "description": "bounded PCM stream -> external Soniox real-time STT when TRANSCRIPTION_SERVICE_URL uses ws/wss",
+   "protocol": "WebSocket over TLS",
+   "metadata": [
+    {
+     "access": "call"
+    }
+   ],
+   "controls": {
+    "data-egress": {
+     "description": "External STT egress is explicit per deployment; use an EU Soniox project and EU endpoint when EU data residency is required",
+     "requirements": [
+      {
+       "requirement-url": "https://vexa.ai/calm/controls/no-egress.requirement.json",
+       "config": {
+        "dataClass": "audio",
+        "destination": "approved-external-provider",
+        "egressApproved": true
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "unique-id": "bot-realtime-voice",
+   "relationship-type": {
+    "connects": {
+     "source": {
+      "node": "bot"
+     },
+     "destination": {
+      "node": "realtime-voice-provider",
+      "interface": "realtime-voice-websocket"
+     }
+    }
+   },
+   "description": "active-speaker PCM -> persistent speech-to-speech session -> streamed PCM response and transcript deltas",
+   "protocol": "WebSocket over TLS",
+   "metadata": [
+    {
+     "access": "call"
+    }
+   ],
+   "controls": {
+    "data-egress": {
+     "description": "Realtime voice egress is opt-in, authenticated server-to-server, payload logging is disabled, and secrets remain in Docker secret-backed files",
+     "requirements": [
+      {
+       "requirement-url": "https://vexa.ai/calm/controls/no-egress.requirement.json",
+       "config": {
+        "dataClass": "audio",
+        "destination": "approved-external-provider",
+        "egressApproved": true
+       }
+      }
      ]
     }
    }

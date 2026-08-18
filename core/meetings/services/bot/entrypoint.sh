@@ -11,6 +11,13 @@
 set -u
 
 export DISPLAY="${DISPLAY:-:99}"
+BOT_STORAGE_DIR="${BOT_STORAGE_DIR:-/app/storage}"
+
+# Join diagnostics write checkpoints before the meeting lifecycle starts. The
+# worker must own a private destination even when the runtime has no persistent
+# storage mount.
+mkdir -p "${BOT_STORAGE_DIR}/screenshots"
+chmod 0700 "${BOT_STORAGE_DIR}" "${BOT_STORAGE_DIR}/screenshots"
 
 echo "[entrypoint] Starting Xvfb on ${DISPLAY}..."
 Xvfb "${DISPLAY}" -screen 0 1920x1080x24 >/tmp/xvfb.log 2>&1 &
@@ -23,17 +30,28 @@ done
 echo "[entrypoint] Starting fluxbox..."
 fluxbox >/tmp/fluxbox.log 2>&1 &
 
+if [ "${ENABLE_NOVNC:-false}" = "true" ]; then
+  echo "[entrypoint] Starting operator-only noVNC view..."
+  x11vnc -display "${DISPLAY}" -forever -nopw -shared -rfbport 5900 >/tmp/x11vnc.log 2>&1 &
+  if [ -d /usr/share/novnc ]; then
+    websockify --web /usr/share/novnc 6080 localhost:5900 >/tmp/websockify.log 2>&1 &
+  else
+    websockify 6080 localhost:5900 >/tmp/websockify.log 2>&1 &
+  fi
+fi
+
 echo "[entrypoint] Starting PulseAudio (no idle exit)..."
 pulseaudio --start --exit-idle-time=-1 --log-target=syslog 2>/dev/null || true
 sleep 1
 # Voice/capture audio graph (best-effort; only the speak path strictly needs it).
-pactl load-module module-null-sink sink_name=tts_sink \
+pactl load-module module-null-sink sink_name=tts_sink rate=48000 channels=1 channel_map=mono \
   sink_properties=device.description="TTSAudioSink" 2>/dev/null || true
 pactl load-module module-remap-source master=tts_sink.monitor source_name=virtual_mic \
+  rate=48000 channels=1 master_channel_map=mono channel_map=mono \
   source_properties=device.description="VirtualMicrophone" 2>/dev/null || true
 pactl set-default-source virtual_mic 2>/dev/null || true
-pactl set-sink-mute tts_sink 1 2>/dev/null || true
-pactl set-source-mute virtual_mic 1 2>/dev/null || true
+pactl set-sink-mute tts_sink 0 2>/dev/null || true
+pactl set-source-mute virtual_mic 0 2>/dev/null || true
 
 # Run the worker from its package dir so the schema path (src→../../../contracts)
 # and the pnpm-linked workspace deps resolve. Always emit start + exit breadcrumbs

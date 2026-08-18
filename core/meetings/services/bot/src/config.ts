@@ -10,7 +10,9 @@
  * (fail-fast, P14). Secrets ride in this contract (token / internalSecret / S3 keys) —
  * never logged (P14/P15).
  *
- * `Invocation` is the typed view the rest of the bot depends on. It is a hand-written
+ * Production may provide the same JSON through `VEXA_BOT_CONFIG_FILE` so secrets do not
+ * appear in the container environment. `Invocation` is the typed view the rest of the bot
+ * depends on. It is a hand-written
  * mirror of the schema's `#/$defs/Invocation` (no zod — zero new runtime deps; ajv is the
  * single source of truth at runtime, this interface is the compile-time shadow).
  */
@@ -63,6 +65,7 @@ export interface Invocation {
   language?: string | null;
   task?: string | null;
   allowedLanguages?: string[];
+  transcriptionContextTerms?: string[];
   transcribeEnabled?: boolean;
   transcriptionTier?: TranscriptionTier;
   transcriptionServiceUrl?: string;
@@ -88,6 +91,15 @@ export interface Invocation {
   s3Bucket?: string;
   s3AccessKey?: string;
   s3SecretKey?: string;
+}
+
+/**
+ * Resolve the meeting identifier used by Wantok's Redis transcript and command channels.
+ * Prefer the control-plane connection id so an external orchestrator can correlate events;
+ * native platform ids remain the self-host fallback when no connection id was supplied.
+ */
+export function meetingChannelId(invocation: Invocation): string | number {
+  return invocation.meeting_id ?? invocation.connectionId ?? invocation.nativeMeetingId ?? 'session';
 }
 
 /** Thrown when VEXA_BOT_CONFIG is missing / not JSON / off-contract. The composition root
@@ -134,6 +146,15 @@ export function parseInvocation(raw: string | undefined): Invocation {
 
 /** Boot helper — read VEXA_BOT_CONFIG from the environment and validate it (P7: config by env). */
 export function loadInvocation(env: NodeJS.ProcessEnv = process.env): Invocation {
+  const configFile = env.VEXA_BOT_CONFIG_FILE?.trim();
+  if (configFile) {
+    try {
+      return parseInvocation(readFileSync(configFile, 'utf8'));
+    } catch (error) {
+      if (error instanceof InvocationError) throw error;
+      throw new InvocationError(`invocation.v1: cannot read VEXA_BOT_CONFIG_FILE — ${(error as Error).message}`);
+    }
+  }
   return parseInvocation(env.VEXA_BOT_CONFIG);
 }
 
@@ -143,6 +164,7 @@ const SPEAKER_STREAM_ENV: Array<[keyof SpeakerStreamManagerConfig, string]> = [
   ['confirmThreshold', 'BOT_SPEAKER_CONFIRM_THRESHOLD'],
   ['maxBufferDuration', 'BOT_SPEAKER_MAX_BUFFER_SEC'],
   ['idleTimeoutSec', 'BOT_SPEAKER_IDLE_TIMEOUT_SEC'],
+  ['silenceRmsThreshold', 'BOT_SPEAKER_SILENCE_RMS'],
 ];
 
 /** Read optional Meet speaker-stream tuning knobs from the bot environment. */
@@ -156,7 +178,8 @@ export function speakerStreamConfigFromEnv(
     const raw = env[key];
     if (raw === undefined || raw.trim() === '') continue;
     const value = Number(raw);
-    const valid = Number.isFinite(value) && value > 0 &&
+    const valid = Number.isFinite(value) &&
+      (property === 'silenceRmsThreshold' ? value >= 0 && value <= 1 : value > 0) &&
       (property !== 'confirmThreshold' || Number.isInteger(value));
     if (!valid) {
       warn(`${key}=${JSON.stringify(raw)} is invalid; using the built-in speaker-stream default`);

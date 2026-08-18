@@ -54,6 +54,7 @@ function runEntrypoint(workerJs: string, opts: { sigtermAfterMs?: number } = {})
       PATH: `${bin}:${process.env.PATH ?? ''}`,
       BOT_APP_DIR: appDir,
       BOT_WORKER_ENTRY: 'worker.cjs',
+      BOT_STORAGE_DIR: join(root, 'storage'),
       DISPLAY: ':99',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -99,6 +100,13 @@ console.log('WORKER-READY');
 process.exit(7);
 `;
 
+const STORAGE_CHECK_WORKER = `
+const { existsSync } = require('node:fs');
+const screenshotDir = process.env.BOT_STORAGE_DIR + '/screenshots';
+console.log(existsSync(screenshotDir) ? 'SCREENSHOT-DIR-READY' : 'SCREENSHOT-DIR-MISSING');
+process.exit(existsSync(screenshotDir) ? 0 : 1);
+`;
+
 const main = async () => {
   {
     const r = await runEntrypoint(GRACEFUL_WORKER, { sigtermAfterMs: 50 });
@@ -111,6 +119,11 @@ const main = async () => {
     const r = await runEntrypoint(PLAIN_EXIT_WORKER);
     check('a normal worker exit propagates its code unchanged', r.code === 7, `exit=${r.code}`);
     check('exit breadcrumb carries the code', r.stdout.includes('worker exited with code 7'), r.stdout.slice(-400));
+  }
+  {
+    const r = await runEntrypoint(STORAGE_CHECK_WORKER);
+    check('screenshot directory exists before the worker starts',
+      r.code === 0 && r.stdout.includes('SCREENSHOT-DIR-READY'), r.stdout.slice(-400));
   }
 };
 

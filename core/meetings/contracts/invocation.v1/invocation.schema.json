@@ -34,6 +34,12 @@
         "language": { "type": ["string", "null"] },
         "task": { "type": ["string", "null"] },
         "allowedLanguages": { "type": "array", "items": { "type": "string" } },
+        "transcriptionContextTerms": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "description": "meeting-scoped product, person, and domain vocabulary for STT context"
+        },
         "transcribeEnabled": { "type": "boolean" },
         "transcriptionTier": { "enum": ["realtime", "deferred"] },
         "transcriptionServiceUrl": { "type": "string", "description": "stt endpoint" },

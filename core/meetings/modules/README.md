@@ -12,6 +12,7 @@ The transcript spine, in dependency order:
 | [capture-codec](capture-codec/) | the shared capture/recording wire codec (pure) | — |
 | [buffer](buffer/) | LocalAgreement-N confirmation core (pure) | — |
 | [whisper](whisper/) | `stt.v1` egress (PCM → Whisper segments) | — |
+| [soniox](soniox/) | Soniox WebSocket STT adapter (PCM → normalized segments) | — |
 | _gmeet-capture_ | Google Meet per-channel audio + glow name | page → `gmeet-capture.v1` |
 | [gmeet-pipeline](gmeet-pipeline/) | channel-routed transcription → transcript.v1 | `gmeet-capture.v1` → `transcript.v1` |
 

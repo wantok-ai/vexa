@@ -18,7 +18,8 @@ const check = (name: string, cond: boolean) => {
 // Structural rules (deterministic, no list dependency)
 check("empty → dropped", isHallucination("") === true);
 check("whitespace → dropped", isHallucination("   ") === true);
-check("short single word → dropped", isHallucination("ok") === true);
+check("short single word kept", isHallucination("ok") === false);
+check("short French response kept", isHallucination("Parfait.") === false);
 check("long single word kept", isHallucination("internationalization") === false);
 check("clean sentence kept", isHallucination("the quick brown fox jumps over") === false);
 check("repetition loop (3+ ×) → dropped", isHallucination("i love it i love it i love it i love it") === true);

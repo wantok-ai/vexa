@@ -26,7 +26,7 @@
  *      that matches too much is its own bug).
  *   4. Ordered resolution: the selector list is honoured top-down, so a broad
  *      structural entry can never beat a precise English one on the same DOM.
- *   5. A total miss records the observed URL / html.lang / navigator.language
+ *   5. A total miss records only the observed origin / html.lang / navigator.language
  *      and the candidate labels into the thrown message, which is what reaches
  *      `meeting.data.last_error` (#846 A4).
  *
@@ -374,7 +374,8 @@ const isCta = (el: Element | null) => el !== null && el.getAttribute('data-cta')
       'the historical error prefix is preserved verbatim (prod monitoring greps it)');
     assert(/html\.lang=hu/.test(message) && /navigator\.language=hu-HU/.test(message),
       'the observed UI locale is recorded in the error');
-    assert(/url=https:\/\/meet\.google\.com\//.test(message), 'the observed URL is recorded in the error');
+    assert(/origin=https:\/\/meet\.google\.com/.test(message), 'the origin is recorded without the meeting path');
+    assert(!/abc-defg-hij/.test(message), 'the private meeting code is not recorded in the error');
     assert(/Mégse/.test(message) && /Kérvényezés/.test(message),
       'the visible text-button labels are recorded — the next occurrence is a one-look diagnosis');
     console.log(`    last_error.reason would read: ${message}`);

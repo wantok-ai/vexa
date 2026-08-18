@@ -97,6 +97,38 @@ async function main(): Promise<void> {
     check('happy: pipeline started then stopped', pipe.started === false);
   }
 
+  // ── active teardown: leave the platform before dismantling its browser page ──
+  {
+    const lc = recordingSink();
+    const teardownOrder: string[] = [];
+    let fireLeave: (a: { action: 'leave' }) => void = () => {};
+    const join: JoinDriver = {
+      async join(report) { await report('awaiting_admission'); await report('active'); return 'admitted'; },
+      onRemoval() { return () => { /* */ }; },
+      async leave() { teardownOrder.push('join.leave'); },
+      async withdraw() { /* */ },
+    };
+    const pipeline: Pipeline = {
+      async start() { /* */ },
+      async stop() { teardownOrder.push('pipeline.stop'); },
+    };
+    const o = createOrchestrator(inv(), {
+      lifecycle: lc,
+      join,
+      pipeline,
+      acts: noopActs((f) => { fireLeave = f; }),
+      aloneness: noopAloneness(),
+    });
+    const runP = o.run();
+    setTimeout(() => fireLeave({ action: 'leave' }), 5);
+    await runP;
+    check(
+      'active teardown: platform leave precedes browser pipeline stop',
+      JSON.stringify(teardownOrder) === JSON.stringify(['join.leave', 'pipeline.stop']),
+      JSON.stringify(teardownOrder),
+    );
+  }
+
   // ── producer-owned event time: admission/runtime billing survives callback delay ──
   {
     const lc = recordingSink();

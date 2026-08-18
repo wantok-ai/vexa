@@ -5,6 +5,10 @@ The bot's input, delivered as **one JSON env var `VEXA_BOT_CONFIG`** (ADR-0002) 
 transcript egress, `meetingApiCallbackUrl` for the lifecycle.v1 sink) + transcription/recording/voice
 flags + S3/auth.
 
+`allowedLanguages` provides the expected spoken languages. `transcriptionContextTerms` carries a
+bounded meeting-scoped glossary for product names, people, acronyms, and domain vocabulary; the STT
+adapter combines it with its built-in operational terms and never logs the supplied values.
+
 ## Secrets
 A *config* contract legitimately carries the secrets the bot needs — `token` · `internalSecret` ·
 `transcriptionServiceToken` · `s3AccessKey` · `s3SecretKey` are marked **SECRET** and appear as

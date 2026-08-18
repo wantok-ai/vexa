@@ -23,6 +23,17 @@ export interface LaunchPersistentOptions {
   locale?: string;
 }
 
+/**
+ * Playwright normally closes Chromium as soon as Node receives a termination signal. The bot
+ * owns its graceful shutdown sequence and must keep the meeting page alive long enough to click
+ * the platform leave control before closing the context itself.
+ */
+export const BOT_OWNED_BROWSER_SIGNALS = {
+  handleSIGINT: false,
+  handleSIGTERM: false,
+  handleSIGHUP: false,
+} as const;
+
 export async function launchPersistentBrowser(
   opts: LaunchPersistentOptions,
 ): Promise<{ context: BrowserContext; page: Page }> {
@@ -34,6 +45,7 @@ export async function launchPersistentBrowser(
     args: opts.args,
     viewport: null,
     locale,
+    ...BOT_OWNED_BROWSER_SIGNALS,
   });
   const pages = context.pages();
   const page = pages.length > 0 ? pages[0] : await context.newPage();

@@ -96,7 +96,7 @@ async function runScenario(label: string, glowPolicy: "named" | "undefined") {
     // Channel choice: rotate 0/1 so consecutive turns can share a channel (the reuse/rotate cases).
     const channel = boundary === 2 ? (turnIdx % 2) : (turnIdx % 2);
 
-    if (boundary === 0 && turnIdx > 0) tsMs += 1500;   // silence gap > ONSET_GAP (1000) → gap onset
+    if (boundary === 0 && turnIdx > 0) tsMs += 1900;   // silence gap > ONSET_GAP (1800) → gap onset
 
     const glow = glowPolicy === "named" ? speaker : undefined;
     for (let j = 0; j < len; j++, k++) {

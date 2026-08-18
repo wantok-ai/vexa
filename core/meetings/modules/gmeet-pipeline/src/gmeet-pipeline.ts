@@ -32,7 +32,7 @@ export interface GmeetPipelineOptions {
   unknownLabel?: string;
   /** SpeakerStreamManager tuning (turn gating / confirmation). */
   config?: SpeakerStreamManagerConfig;
-  /** Silence gap (ms) on a channel that ends its turn (→ re-bind on the next onset). Default 1000. */
+  /** Silence gap (ms) on a channel that ends its turn (→ re-bind on the next onset). Default 1800. */
   onsetGapMs?: number;
   /** Surface a transcribe FAILURE (P18: fail loud + attributable). The pipeline still
    *  degrades gracefully (empty turn) so it doesn't wedge, but it reports the fault here
@@ -50,7 +50,10 @@ export interface GmeetPipeline {
 
 export function createGmeetPipeline(opts: GmeetPipelineOptions): GmeetPipeline {
   const UNKNOWN = opts.unknownLabel ?? 'Speaker';
-  const ONSET_GAP = opts.onsetGapMs ?? 1000;
+  // Meet can pause delivery for more than a second inside a natural sentence. A 1s boundary
+  // produced 0.3s orphan turns and lost words; 1.8s preserves the observed 1.5s hesitation while
+  // remaining below SpeakerStreamManager's separate 2s batch-gap boundary.
+  const ONSET_GAP = opts.onsetGapMs ?? 1800;
   const mgr = new SpeakerStreamManager(opts.config);
   const inflight = new Set<Promise<void>>();
   // Per channel: the CURRENT turn's stream key, bound name, last-audio time, turn counter.

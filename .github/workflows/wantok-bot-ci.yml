@@ -41,6 +41,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - name: Build meeting-bot workspace dependencies
+        run: pnpm --filter '@vexa/bot^...' build
       - run: pnpm --filter @vexa/transcribe-soniox test
       - run: pnpm --filter @vexa/bot test
       - run: pnpm --filter @vexa/bot build

@@ -42,6 +42,7 @@ import { createStageController, type StageController } from './stage.js';
 import { createCameraSceneController, type CameraSceneController } from './camera-scene.js';
 import { createTtsPlayback } from './tts-playback.js';
 import { createRealtimeVoiceSession, realtimeVoiceConfigFromEnv, type RealtimeVoiceSession } from './realtime-voice.js';
+import { createHttpAgentToolSink, type AgentToolSink } from './adapters/agent-tool-http.js';
 import type {
   JoinDriver,
   Pipeline,
@@ -287,6 +288,17 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
       tts: createTtsPlayback((message) => console.log(`[bot] ${message}`), browserAudio),
     });
     speakController = speak;
+    let agentToolSink: AgentToolSink | null = null;
+    if (inv.meetingApiCallbackUrl) {
+      try {
+        agentToolSink = createHttpAgentToolSink({
+          callbackUrl: inv.meetingApiCallbackUrl,
+          internalSecret: inv.internalSecret,
+        });
+      } catch {
+        console.log('[bot] realtime: agent tools unavailable for this callback topology');
+      }
+    }
     realtimeVoice = browserAudio
       ? createRealtimeVoiceSession(
           realtimeVoiceConfigFromEnv(env, String(meetingId)),
@@ -295,6 +307,13 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
             onListening: () => camera.setMode('listening', 'Je suis la conversation et je garde le fil.'),
             onResponseStarted: () => camera.setMode('thinking', 'Je prépare une réponse en temps réel.'),
             onTranscript: (text) => camera.setMode('speaking', text.slice(-220)),
+            onToolCall: async (call) => {
+              const label = typeof call.arguments.label === 'string'
+                ? call.arguments.label.slice(0, 180)
+                : 'Mise à jour de la mémoire de réunion';
+              await camera.setMode('thinking', label);
+              return agentToolSink?.execute(call) ?? { status: 'unavailable' };
+            },
           },
         )
       : null;

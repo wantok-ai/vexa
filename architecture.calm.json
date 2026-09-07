@@ -174,11 +174,23 @@
    "unique-id": "realtime-voice-provider",
    "node-type": "service",
    "name": "Realtime voice provider",
-   "description": "External speech-to-speech provider reached through Cloudflare AI Gateway when configured, with a direct OpenAI server-to-server fallback. The ephemeral meeting bot streams active-speaker PCM and receives audio/transcript deltas; no provider credential is stored in the browser page.",
+   "description": "External speech-to-speech provider reached through Cloudflare AI Gateway when configured, with a direct OpenAI server-to-server fallback. The ephemeral meeting bot streams active-speaker PCM and an approved bounded project context, then receives audio/transcript deltas; no provider credential is stored in the browser page.",
    "interfaces": [
     {
      "unique-id": "realtime-voice-websocket",
      "type": "websocket"
+    }
+   ]
+  },
+  {
+   "unique-id": "host-agent-control-plane",
+   "node-type": "service",
+   "name": "Host agent control plane",
+   "description": "Optional deployment-owned control plane that receives authenticated, meeting-scoped realtime tool calls from the ephemeral bot. It owns persistence and any external side effects; the bot only reports structured intent.",
+   "interfaces": [
+    {
+     "unique-id": "host-agent-tool-api",
+     "type": "api"
     }
    ]
   },
@@ -1719,7 +1731,7 @@
      }
     }
    },
-   "description": "active-speaker PCM -> persistent speech-to-speech session -> streamed PCM response and transcript deltas",
+   "description": "active-speaker PCM and bounded project context -> persistent speech-to-speech session -> streamed PCM response and transcript deltas",
    "protocol": "WebSocket over TLS",
    "metadata": [
     {
@@ -1733,8 +1745,44 @@
       {
        "requirement-url": "https://vexa.ai/calm/controls/no-egress.requirement.json",
        "config": {
-        "dataClass": "audio",
+        "dataClass": "audio-and-bounded-project-context",
         "destination": "approved-external-provider",
+        "egressApproved": true
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "unique-id": "bot-host-agent-tools",
+   "relationship-type": {
+    "connects": {
+     "source": {
+      "node": "bot"
+     },
+     "destination": {
+      "node": "host-agent-control-plane",
+      "interface": "host-agent-tool-api"
+     }
+    }
+   },
+   "description": "authenticated capture_meeting_memory and set_meeting_focus calls scoped to one meeting",
+   "protocol": "HTTPS",
+   "metadata": [
+    {
+     "access": "call"
+    }
+   ],
+   "controls": {
+    "data-egress": {
+     "description": "Structured meeting memory leaves the bot only when a deployment explicitly supplies its authenticated lifecycle callback and internal secret",
+     "requirements": [
+      {
+       "requirement-url": "https://vexa.ai/calm/controls/no-egress.requirement.json",
+       "config": {
+        "dataClass": "meeting-derived-structured-intent",
+        "destination": "deployment-owned-control-plane",
         "egressApproved": true
        }
       }

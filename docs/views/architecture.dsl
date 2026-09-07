@@ -98,7 +98,8 @@ edges:
   remote-browser -write-> userdata-blob  # provisioning login uploads the confirmed signed-in session
   gateway -read-> recording-blob
   bot -call-> soniox-cloud  # bounded PCM stream -> external Soniox real-time STT when TRANSCRIPTION_SERVICE_URL uses ws/wss
-  bot -call-> realtime-voice-provider  # active-speaker PCM -> persistent speech-to-speech session -> streamed PCM response and transcript deltas
+  bot -call-> realtime-voice-provider  # active-speaker PCM and bounded project context -> persistent speech-to-speech session -> streamed PCM response and transcript deltas
+  bot -call-> host-agent-control-plane  # authenticated capture_meeting_memory and set_meeting_focus calls scoped to one meeting
   bot -call-> transcription  # audio -> first-party STT via TRANSCRIPTION_SERVICE_URL
   bot -read-> bot-commands  # SUBSCRIBE acts.v1 commands
   meeting-api -write-> bm-status  # PUBLISH status

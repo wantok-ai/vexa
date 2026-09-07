@@ -29,6 +29,7 @@ flowchart LR
   end
   soniox_cloud["Soniox Cloud"]
   realtime_voice_provider["Realtime voice provider"]
+  host_agent_control_plane["Host agent control plane"]
   slim["slim"]
   extension["extension"]
   terminal["terminal"]
@@ -36,6 +37,7 @@ flowchart LR
   meeting_api -->|"write"| segments_table
   bot -->|"WebSocket over TLS"| soniox_cloud
   bot -->|"WebSocket over TLS"| realtime_voice_provider
+  bot -->|"HTTPS"| host_agent_control_plane
   bot -->|"HTTPS"| transcription
   meeting_api -->|"JDBC"| postgres
   meeting_api -->|"HTTPS"| minio

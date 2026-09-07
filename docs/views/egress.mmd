@@ -23,6 +23,8 @@ flowchart LR
   soniox_cloud["Soniox Cloud"]
   bot ==>|"audio -> approved-external-provider"| soniox_cloud
   realtime_voice_provider["Realtime voice provider"]
-  bot ==>|"audio -> approved-external-provider"| realtime_voice_provider
+  bot ==>|"audio-and-bounded-project-context -> approved-external-provider"| realtime_voice_provider
+  host_agent_control_plane["Host agent control plane"]
+  bot ==>|"meeting-derived-structured-intent -> deployment-owned-control-plane"| host_agent_control_plane
   transcription["transcription"]
   bot ==>|"audio -> tenant-hosted"| transcription
